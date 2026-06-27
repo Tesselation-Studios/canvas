@@ -1,0 +1,16 @@
+services:
+  canvas:
+    build: .
+    container_name: canvas
+    restart: unless-stopped
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.canvas.rule=Host(`canvas.wodinga.studio`)"
+      - "traefik.http.routers.canvas.entrypoints=websecure"
+      - "traefik.http.services.canvas.loadbalancer.server.port=5000"
+
+networks:
+  traefik:
+    external: true
