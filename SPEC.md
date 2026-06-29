@@ -13,6 +13,7 @@
 | 1 | 2026-06-27 | Initial draft for Raf review |
 | 2 | 2026-06-27 | Remove all trading references; genericize board examples |
 | 3 | 2026-06-29 | Update to reflect deployed reality: no Docker, SQLite persistence, card permalinks, card editing, full CDN template, draw/app content types, newest-first scrolling, nohup runtime, known limitations |
+| 4 | 2026-06-29 | Lazy loading (infinite scroll via paginated history), card expiry (`expires_at` column), GitHub repo, issue tracker, updated known issues |
 
 ---
 
@@ -50,6 +51,7 @@ Canvas is a **real-time visual display surface** where AI agents push content an
 | U8 | Click 🔗 on any card to copy a permalink — share links to specific cards via `canvas.wodinga.studio/#card-<uuid>` |
 | U9 | Navigate to a card via URL hash; scrolls to it automatically on load or hashchange |
 | U10 | Toggle between feed mode and whiteboard mode (fabric.js-powered drawing canvas) |
+| U11 | **Lazy-load history** — only the most recent 20 cards load on page load; click "Load N more" to fetch older batches, with no limit on total history depth |
 
 ### As an Agent (Pusher)
 
@@ -63,6 +65,7 @@ Canvas is a **real-time visual display surface** where AI agents push content an
 | P6 | Know the canvas URL and token from environment, not hardcoded |
 | P7 | **Edit an existing card** by supplying `card_id` — card is updated in-place, SSE broadcasts the updated version |
 | P8 | Know the canvas URL and token from environment, not hardcoded |
+| P9 | **Set card expiry** by supplying `expires_at` (ISO 8601 string) — expired cards are filtered from history and in-memory display |
 
 ---
 
@@ -98,6 +101,8 @@ Internet / Tailscale
 | Runtime | Direct Python process (`python3 app.py` — not Docker, not gunicorn; see §3.3 for why) |
 | Port | **5001** (avoids conflict with data_bus.py on 5000) |
 | Public URL | `https://canvas.wodinga.studio` |
+| Source | [casper-bot-wodinga/canvas](https://github.com/casper-bot-wodinga/canvas) (private) |
+| Issue tracker | [GitHub Issues](https://github.com/casper-bot-wodinga/canvas/issues) |
 | Traefik routing | **Static route in `dynamic.yml`** (NOT Docker labels — Canvas isn't on docker.klo) |
 | DNS | `*.wodinga.studio` wildcard → 192.168.1.179 (Traefik) already covers this |
 
@@ -160,7 +165,7 @@ Canvas uses a SQLite database at `data/canvas.db` for persistent card storage. C
 
 #### Schema
 
-Unlike earlier spec versions that suggested a free-form schema, Canvas defines a fixed `cards` table managed by the app:
+Canvas defines a fixed `cards` table managed by the app:
 
 ```sql
 CREATE TABLE IF NOT EXISTS cards (
@@ -171,7 +176,8 @@ CREATE TABLE IF NOT EXISTS cards (
     title TEXT,
     agent TEXT,
     agent_emoji TEXT,
-    timestamp REAL NOT NULL
+    timestamp REAL NOT NULL,
+    expires_at TEXT              -- ISO 8601 string, NULL = never expires
 );
 ```
 
@@ -187,11 +193,12 @@ The app also persists a `schema_version` table if migrations become necessary.
 
 | Event | Behavior |
 |---|---|
-| App start | `init_db()` creates tables if missing; `load_all_cards()` populates `BOARDS` from SQLite |
-| Push (non-stream-only) | Card saved to both `BOARDS` (in-memory) and `cards` table (SQLite) |
+| App start | `init_db()` creates tables if missing; `load_all_cards()` populates `BOARDS` from SQLite (filtering expired) |
+| Push (non-stream-only) | Card saved to both `BOARDS` (in-memory) and `cards` table (SQLite). If `expires_at` is in the past, card is persisted to DB but NOT added to in-memory list. |
 | Clear board | `clear_board()` empties `BOARDS` and `DELETE FROM cards WHERE board = ?` |
-| App restart | All cards reloaded from SQLite; SSE reconnects, frontend loads history |
+| App restart | All non-expired cards reloaded from SQLite; SSE reconnects, frontend loads paginated history |
 | Update (card_id) | Card updated in-place in `BOARDS` and `INSERT OR REPLACE` into `cards` table |
+| Expired query | All SQL queries filter with `WHERE expires_at IS NULL OR expires_at > datetime('now')` |
 
 ### SSE Architecture
 
@@ -466,7 +473,7 @@ Behavior:
 | `GET` | `/` | No (viewer) | Viewer UI; query param `?board=<name>`. Serves `index.html` (full CDN version). Cache-Control: no-cache headers. |
 | `GET` | `/test` | No (viewer) | Zero-dependency test page. Serves `minimal.html`. Proves the pipeline works without CDNs. |
 | `GET` | `/stream/<board_id>` | No (SSE) | SSE stream for real-time updates |
-| `GET` | `/history/<board_id>` | No (reader) | JSON history of a board (all items in chronological order — frontend reverses for newest-first display) |
+| `GET` | `/history/<board_id>` | No (reader) | Paginated JSON history: `?limit=N&before=<unix_ts>`. Default limit=20, max 100. Returns `{cards: [...], total: N, limit: N}`. Filters expired cards. |
 | `GET` | `/boards` | No (reader) | List all boards with content |
 | `GET` | `/health` | No | Health check |
 | `POST` | `/reload` | **Token** | Reload Jinja templates without restart |
@@ -891,13 +898,13 @@ This section tracks issues discovered during deployment and testing.
 
 ### ⚠️ Known Issues (Not Yet Fixed)
 
-| # | Issue | Status | Notes |
-|---|---|---|---|
-| L5 | **No auth token validation** — The `require_token` decorator is specified in the spec but not wired into `app.py`'s push route. Any LAN client can push without a token. | ⚠️ Low priority | LAN-only Traefik middleware provides network-level protection. Token validation should be added for defense-in-depth. |
-| L6 | **gunicorn runs via nohup** — Canvas is started with `nohup python3 app.py > canvas.log 2>&1 &` instead of a proper systemd service. No auto-restart on crash, no predictable startup on boot. | ⚠️ Medium priority | A systemd unit (`/etc/systemd/system/canvas.service`) should be created for proper lifecycle management. |
-| L7 | **Hash redirect (SSE only, not history)** — When a new card arrives via SSE, the frontend sets `window.location.hash = 'card-<id>'`. This causes the browser's back button behavior to be cluttered with card hashes — every new push creates a new history entry. | ⚠️ Low priority | History is only pushed on SSE live events, not on `loadHistory`. Should use `replaceState` instead of hash change, or only on user-initiated permalink clicks. |
-| L8 | **No stream_only for clear** — The `clear` action always persists to both `BOARDS` and SQLite regardless of `stream_only`. | ⚠️ Low priority | Consistent behavior (clear should always be permanent). |
-| L9 | **Template cache on initial load** — `POST /reload` clears Jinja cache but initial page loads may serve stale templates. | ✅ Mitigated | `TEMPLATES_AUTO_RELOAD = True` is set. Templates are auto-reloaded on change. |
+| # | Issue | Priority | GitHub Issue | Notes |
+|---|---|---|---|---|
+| L5 | **No auth token validation** — The `require_token` decorator is specified in the spec but not wired into `app.py`'s push route. Any LAN client can push without a token. | ⚠️ Low | [#1](https://github.com/casper-bot-wodinga/canvas/issues/1) | LAN-only Traefik middleware provides network-level protection. Token validation should be added for defense-in-depth. |
+| L6 | **gunicorn runs via nohup** — Canvas is started with `nohup python3 app.py > canvas.log 2>&1 &` instead of a proper systemd service. | ⚠️ Medium | [#2](https://github.com/casper-bot-wodinga/canvas/issues/2) | A systemd unit (`/etc/systemd/system/canvas.service`) should be created for proper lifecycle management. |
+| L7 | **Hash redirect (SSE only, not history)** — When a new card arrives via SSE, the frontend sets `window.location.hash = 'card-<id>'`. This clutters back-button history. | ⚠️ Low | — | Should use `replaceState` instead of hash change, or only on user-initiated permalink clicks. |
+| L10 | **Board management UI missing** — No create/delete/rename boards UI in the frontend. | ⚠️ Low | [#3](https://github.com/casper-bot-wodinga/canvas/issues/3) | Boards are created lazily on first push; no way to manage them from browser. |
+| L11 | **No card deletion** — Individual cards cannot be deleted; only full board clear is supported. | ⚠️ Low | [#4](https://github.com/casper-bot-wodinga/canvas/issues/4) | Needs DELETE endpoint + SSE delete event + frontend delete button. |
 
 ---
 
@@ -1110,13 +1117,22 @@ Then have an agent run a test push during normal operations.
 
 Items not yet deployed, tracked for future iteration:
 
-| Step | What | Priority | Who |
+| Step | What | Priority | GitHub Issue |
 |---|---|---|---|
-| 1 | Add token auth middleware to `/push` endpoint | Low | Coder |
-| 2 | Create systemd unit (`canvas.service`) for auto-start and crash recovery | Medium | Homelab Wizard |
-| 3 | Fix hash redirect — use `replaceState` instead of setting `location.hash` on every SSE push | Low | Coder |
-| 4 | Consider `stream_only: true` for clear actions | Low | Coder |
-| 5 | Add /app route alias for canonical FE served via gunicorn behind reverse proxy | Future | Orchestrator |
+| 1 | Add token auth middleware to `/push` endpoint | Low | [#1](https://github.com/casper-bot-wodinga/canvas/issues/1) |
+| 2 | Create systemd unit (`canvas.service`) for auto-start and crash recovery | Medium | [#2](https://github.com/casper-bot-wodinga/canvas/issues/2) |
+| 3 | Fix hash redirect — use `replaceState` instead of setting `location.hash` on every SSE push | Low | — |
+| 4 | Add board management UI (create/delete/rename boards) | Low | [#3](https://github.com/casper-bot-wodinga/canvas/issues/3) |
+| 5 | Add card deletion (DELETE endpoint + frontend button) | Low | [#4](https://github.com/casper-bot-wodinga/canvas/issues/4) |
+
+### Done in Iteration 4
+
+| Step | What |
+|---|---|
+| ✅ | **Lazy loading pagination** — `GET /history/<board_id>?limit=N&before=<ts>` returns paginated cards; frontend loads 20 at a time with "Load N more" button |
+| ✅ | **Card expiry** — `expires_at` column in SQLite; expired cards filtered from queries; agents can push with `expires_at: "2026-07-01T00:00:00"` |
+| ✅ | **GitHub setup** — Code at [casper-bot-wodinga/canvas](https://github.com/casper-bot-wodinga/canvas) with issue tracker |
+| ✅ | **SPEC update** — This document reflects lazy loading, expiry, and GitHub status |
 
 ---
 
@@ -1134,3 +1150,20 @@ The following questions were left open in Iteration 1. Proposed defaults are doc
 | D6 | Persistence model | **SQLite + in-memory cache** | Cards survive restarts; BOARDS dict is loaded from DB on startup. No arbitrary history cap. |
 | D7 | Card uniqueness | **UUID** (auto-generated by server or client-supplied via `card_id`) | Universal, collision-resistant. Enables permalinks and in-place updates. |
 | D8 | Template strategy | **Two templates** — `index.html` (full CDN) + `minimal.html` (zero-dependency) | Full CDN for rich rendering; minimal for debugging and proving the pipeline without external deps. |
+---
+
+## 🔜 Planned: Agent Filtering
+
+**`?agent=<name>` query param** — Raf and Izzy can filter the feed to only show cards from agents they care about.
+
+### Server-side
+- `GET /history/<board_id>?agent=casper` — returns only cards from that agent  
+- `GET /history/<board_id>?agent=casper,alt` — comma-separated, multiple agents  
+- Works alongside lazy loading pagination (`limit`, `before`)
+
+### Frontend
+- Agent filter bar in the header — shows active agents as clickable chips
+- Click to toggle: show/hide that agent's cards  
+- URL updates with `?agent=` so filters are shareable
+
+**Status:** Spec'd, implementation pending (blocks on lazy loading merge)

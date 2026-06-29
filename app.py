@@ -10,6 +10,7 @@ import sqlite3
 import time
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from flask import Flask, render_template, request, Response, jsonify, make_response
 
 app = Flask(__name__)
@@ -43,20 +44,28 @@ def init_db():
             title TEXT,
             agent TEXT,
             agent_emoji TEXT,
-            timestamp REAL NOT NULL
+            timestamp REAL NOT NULL,
+            expires_at TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(board)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_timestamp ON cards(timestamp)")
+    # Migration: add expires_at column if missing (older databases)
+    try:
+        conn.execute("ALTER TABLE cards ADD COLUMN expires_at TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.commit()
     conn.close()
 
 
 def load_all_cards():
-    """Load all cards from SQLite into in-memory BOARDS, sorted by timestamp."""
+    """Load all non-expired cards from SQLite into in-memory BOARDS, sorted by timestamp."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM cards ORDER BY board, timestamp ASC"
+        """SELECT * FROM cards
+           WHERE expires_at IS NULL OR expires_at > datetime('now')
+           ORDER BY board, timestamp ASC"""
     ).fetchall()
     conn.close()
 
@@ -70,6 +79,7 @@ def load_all_cards():
             "agent": row["agent"] or "",
             "agent_emoji": row["agent_emoji"] or "",
             "timestamp": row["timestamp"],
+            "expires_at": row["expires_at"],
         }
         boards[row["board"]].append(item)
 
@@ -80,8 +90,8 @@ def save_card_to_db(board_id, item):
     """Persist a single card to the SQLite database."""
     conn = get_db()
     conn.execute(
-        """INSERT OR REPLACE INTO cards (id, board, type, content, title, agent, agent_emoji, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT OR REPLACE INTO cards (id, board, type, content, title, agent, agent_emoji, timestamp, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             item["id"],
             board_id,
@@ -91,6 +101,7 @@ def save_card_to_db(board_id, item):
             item.get("agent", ""),
             item.get("agent_emoji", ""),
             item["timestamp"],
+            item.get("expires_at"),
         ),
     )
     conn.commit()
@@ -184,8 +195,23 @@ def push():
         clear_board_in_db(board_id)
         return jsonify({"status": "ok", "board": board_id, "action": "cleared"})
 
+    # ── Parse expires_at ─────────────────────────────────────────────
+    expires_at = data.get("expires_at")
+    # If expires_at is set, validation: it should be an ISO 8601 string
+    if expires_at is not None and not isinstance(expires_at, str):
+        return jsonify({"error": "expires_at must be an ISO 8601 string"}), 400
+
     # ── Build item: update or create ───────────────────────────────────
     is_update = False
+    expires_in_past = False
+    if expires_at:
+        try:
+            expires_dt = datetime.fromisoformat(expires_at)
+            if expires_dt < datetime.now(timezone.utc):
+                expires_in_past = True
+        except (ValueError, TypeError):
+            pass
+
     if card_id:
         board = get_board(board_id)
         existing = next((c for c in board if c["id"] == card_id), None)
@@ -196,6 +222,7 @@ def push():
             existing["title"] = data.get("title", "")
             existing["agent"] = agent
             existing["agent_emoji"] = agent_emoji
+            existing["expires_at"] = expires_at
             item = existing
             is_update = True
         else:
@@ -208,8 +235,11 @@ def push():
                 "agent": agent,
                 "agent_emoji": agent_emoji,
                 "timestamp": time.time(),
+                "expires_at": expires_at,
             }
-            board.append(item)
+            # Don't add expired cards to in-memory list
+            if not expires_in_past:
+                board.append(item)
     else:
         # Regular create with new UUID
         item = {
@@ -220,6 +250,7 @@ def push():
             "agent": agent,
             "agent_emoji": agent_emoji,
             "timestamp": time.time(),
+            "expires_at": expires_at,
         }
 
     # ── Add action field for SSE consumers ─────────────────────────────
@@ -236,13 +267,15 @@ def push():
                 dead.add(q)
         SUBSCRIBERS[board_id] -= dead
     else:
+        # Don't persist expired cards; they get filtered on queries
         if is_update:
             # Card already in BOARDS (updated in-place above) — just persist
             save_card_to_db(board_id, item)
         else:
-            # New card — add to in-memory list and persist
-            add_to_board(board_id, item)
-            # add_to_board already notifies SSE, skip duplicate notification below
+            # New card — add to in-memory list (if not expired) and persist
+            if not expires_in_past:
+                add_to_board(board_id, item)
+                # add_to_board already notifies SSE, skip duplicate notification below
             save_card_to_db(board_id, item)
 
         if is_update:
@@ -265,10 +298,83 @@ def push():
 
 @app.route("/history/<board_id>")
 def history(board_id):
-    """Return recent history for a board as JSON."""
-    board = get_board(board_id)
-    # Return in reverse chronological so newest first, but client can handle
-    return jsonify(list(board))
+    """Return paginated history for a board as JSON.
+
+    Query params:
+        limit (int): Number of cards to return (default 20, max 100)
+        before (float): Unix timestamp — return cards older than this
+
+    Returns cards in chronological order (oldest first). The frontend
+    reverses for newest-first display. This is the order needed for
+    "Load more" pagination where we want cards before a given timestamp.
+    """
+    limit = request.args.get("limit", 20, type=int)
+    limit = min(max(1, limit), 100)
+    before = request.args.get("before", type=float)
+
+    conn = get_db()
+    if before:
+        rows = conn.execute(
+            """SELECT * FROM cards
+               WHERE board = ?
+                 AND timestamp < ?
+                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (board_id, before, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM cards
+               WHERE board = ?
+                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (board_id, limit),
+        ).fetchall()
+    conn.close()
+
+    items = []
+    for row in rows:
+        content = row["content"]
+        # Parse JSON-stringified content back to objects (e.g. draw shapes)
+        if content and isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, (dict, list)):
+                    content = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        items.append({
+            "id": row["id"],
+            "type": row["type"],
+            "content": content,
+            "title": row["title"] or "",
+            "agent": row["agent"] or "",
+            "agent_emoji": row["agent_emoji"] or "",
+            "timestamp": row["timestamp"],
+            "expires_at": row["expires_at"],
+        })
+
+    # Return in chronological order (oldest first) so frontend can append
+    # for "Load more" pagination. Each page is oldest-first for appending.
+    items.reverse()
+
+    # Also include total count for the "Load N more (M remaining)" indicator
+    count_conn = get_db()
+    remaining = count_conn.execute(
+        """SELECT COUNT(*) FROM cards
+           WHERE board = ?
+             AND (expires_at IS NULL OR expires_at > datetime('now'))""",
+        (board_id,),
+    ).fetchone()[0]
+    count_conn.close()
+
+    return jsonify({
+        "cards": items,
+        "total": remaining,
+        "limit": limit,
+    })
 
 
 @app.route("/stream/<board_id>")

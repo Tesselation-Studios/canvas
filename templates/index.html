@@ -647,6 +647,14 @@
   </div>
 </div>
 
+<!-- Load More button -->
+<div id="load-more-container" style="display:none; text-align:center; padding:20px;">
+  <button id="load-more-btn" style="background:var(--bg-card); border:1px solid var(--border); color:var(--accent); padding:8px 24px; border-radius:6px; cursor:pointer; font-family:var(--font); font-size:13px; transition:all 0.2s;">
+    Load 20 more
+  </button>
+  <div id="load-more-status" style="color:var(--text-dim); font-size:12px; margin-top:8px;"></div>
+</div>
+
 <!-- Toast notification -->
 <div id="toast"></div>
 
@@ -666,6 +674,12 @@ let clearBtn = document.getElementById('clear-btn');
 let modeToggle = document.getElementById('mode-toggle');
 let whiteboardMode = document.getElementById('whiteboard-mode');
 let toastEl = document.getElementById('toast');
+
+// ─── Pagination State ────────────────────────────────────────────────────
+let oldestTimestamp = null;   // oldest card timestamp currently shown
+let totalCards = 0;           // total non-expired cards on this board
+let loadedCount = 0;          // how many cards we've loaded (approximate)
+const PAGE_SIZE = 20;
 
 // ─── Mermaid init ─────────────────────────────────────────────────────────
 if (typeof mermaid !== 'undefined') {
@@ -1009,6 +1023,11 @@ function addCard(item, isHistory) {
     cards.forEach(c => c.remove());
     const card = createCard(item);
     contentEl.insertBefore(card, contentEl.firstChild);
+    // Reset pagination state
+    oldestTimestamp = null;
+    loadedCount = 0;
+    totalCards = 0;
+    updateLoadMoreButton();
     return;
   }
 
@@ -1033,6 +1052,13 @@ function addCard(item, isHistory) {
   // ── Create new card ────────────────────────────────────────────────
   const card = createCard(item);
   contentEl.insertBefore(card, contentEl.firstChild);
+
+  // Track pagination state for SSE-delivered cards
+  if (!isHistory && item.id && item.id !== 'clear' && item.action !== 'update') {
+    loadedCount++;
+    totalCards++;
+    updateLoadMoreButton();
+  }
 
   // Update hash to point to this new card (SSE live only, not history)
   if (!isHistory && item.id && item.id !== 'clear') {
@@ -1083,15 +1109,88 @@ function handleSSEMessage(item) {
   }
 }
 
+// ─── Load More Button ─────────────────────────────────────────────────────
+const loadMoreBtn = document.getElementById('load-more-btn');
+const loadMoreContainer = document.getElementById('load-more-container');
+const loadMoreStatus = document.getElementById('load-more-status');
+
+function updateLoadMoreButton() {
+  const remaining = totalCards - loadedCount;
+  if (remaining <= 0) {
+    loadMoreContainer.style.display = 'block';
+    loadMoreBtn.style.display = 'none';
+    loadMoreStatus.textContent = 'All cards loaded';
+    return;
+  }
+  loadMoreContainer.style.display = 'block';
+  loadMoreBtn.style.display = 'inline-block';
+  const batchSize = Math.min(PAGE_SIZE, remaining);
+  loadMoreBtn.textContent = `Load ${batchSize} more (${remaining} remaining)`;
+  loadMoreStatus.textContent = '';
+}
+
+loadMoreBtn.addEventListener('click', async () => {
+  if (!oldestTimestamp) return;
+  loadMoreBtn.disabled = true;
+  loadMoreBtn.textContent = 'Loading...';
+  try {
+    const url = `${HISTORY_URL}?limit=${PAGE_SIZE}&before=${oldestTimestamp}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.cards && data.cards.length > 0) {
+      // data.cards comes oldest-first (chronological), append to bottom
+      data.cards.forEach(item => {
+        const card = createCard(item);
+        contentEl.appendChild(card);
+        // Track the oldest timestamp for next page
+        if (item.timestamp < oldestTimestamp) {
+          oldestTimestamp = item.timestamp;
+        }
+      });
+      loadedCount += data.cards.length;
+      // Update total from server response (more accurate)
+      totalCards = data.total;
+    }
+    updateLoadMoreButton();
+  } catch (e) {
+    console.warn('Failed to load more:', e);
+    loadMoreBtn.textContent = 'Error — try again';
+  } finally {
+    loadMoreBtn.disabled = false;
+  }
+});
+
 // ─── Load History ─────────────────────────────────────────────────────────
 
 async function loadHistory() {
   try {
-    const response = await fetch(HISTORY_URL);
-    const items = await response.json();
-    if (items.length === 0) return;
+    const response = await fetch(`${HISTORY_URL}?limit=${PAGE_SIZE}`);
+    const data = await response.json();
+
+    totalCards = data.total || 0;
+
+    // data.cards comes oldest-first (chronological).
+    // We need to prepend them newest-first for display.
+    const items = data.cards || [];
+    if (items.length === 0) {
+      // Still might have more than 0 total (edge case), show button
+      if (totalCards > 0) {
+        updateLoadMoreButton();
+      }
+      return;
+    }
+
     emptyState.style.display = 'none';
-    items.reverse().forEach(item => addCard(item, true));
+
+    // items are oldest-first, reverse to newest-first for prepending
+    items.slice().reverse().forEach(item => addCard(item, true));
+
+    // Track oldest timestamp for "Load more" button
+    oldestTimestamp = items[0].timestamp;  // items[0] is the oldest
+    loadedCount = items.length;
+
+    updateLoadMoreButton();
+
     // Position at top (newest first)
     window.scrollTo({ top: 0, behavior: 'instant' });
 
