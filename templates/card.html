@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>canvas / card</title>
+
+<!-- CDN dependencies -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.6/marked.min.js?v=2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js?v=2"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/atom-one-dark.min.css?v=2">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css?v=2">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js?v=2"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js?v=2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js?v=2"></script>
+<script src="https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js?v=2"></script>
+
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-hover: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --font: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    height: 100%;
+    overflow-x: hidden;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior-y: contain;
+    touch-action: manipulation;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  #header .title {
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+  }
+
+  #header .separator {
+    color: var(--text-dim);
+  }
+
+  #header .board-label {
+    color: var(--text-dim);
+  }
+
+  #header .board-name {
+    color: var(--green);
+    font-weight: 600;
+  }
+
+  #card-id-display {
+    color: var(--text-dim);
+    font-size: 11px;
+    opacity: 0.7;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #header .status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    animation: pulse 2s infinite;
+  }
+
+  .status-dot.disconnected {
+    background: var(--red);
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ─── Back button ─────────────────────────────────────────────── */
+  .back-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+  .back-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ─── Copy link button ────────────────────────────────────────── */
+  .copy-link-btn, .tool-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    transition: all 0.2s;
+  }
+  .copy-link-btn:hover, .tool-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .tool-btn.delete-btn:hover {
+    border-color: var(--red);
+    color: var(--red);
+  }
+  .tool-btn.edit-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* ─── Edit mode ─────────────────────────────────────────────── */
+  #edit-container {
+    display: none;
+    margin-top: 12px;
+  }
+  #edit-container.visible {
+    display: block;
+  }
+  #edit-textarea {
+    width: 100%;
+    min-height: 200px;
+    background: #0d1117;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 12px;
+    resize: vertical;
+    outline: none;
+    tab-size: 2;
+  }
+  #edit-textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(88,166,255,0.2);
+  }
+  #edit-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .edit-action-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+  .edit-action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .edit-action-btn.save-btn {
+    background: #1a3a2a;
+    border-color: var(--green);
+    color: var(--green);
+  }
+  .edit-action-btn.save-btn:hover {
+    background: var(--green);
+    color: #fff;
+  }
+  .edit-action-btn.delete-confirm-btn {
+    margin-left: auto;
+    border-color: var(--red);
+    color: var(--red);
+  }
+  .edit-action-btn.delete-confirm-btn:hover {
+    background: var(--red);
+    color: #fff;
+  }
+
+  /* ─── Main content ────────────────────────────────────────────── */
+  #content {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+
+  #not-found {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-dim);
+  }
+  #not-found .emoji { font-size: 48px; display: block; margin-bottom: 16px; }
+  #not-found h2 { color: var(--text-dim); font-weight: 400; margin-bottom: 8px; }
+  #not-found p { font-size: 13px; margin-bottom: 16px; }
+  #not-found a { color: var(--accent); text-decoration: none; }
+  #not-found a:hover { text-decoration: underline; }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    animation: fadeIn 0.3s ease;
+    overflow-x: auto;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .card .meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .card .meta .type-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 10px;
+  }
+
+  .type-badge.markdown { background: #1a3a2a; color: var(--green); }
+  .type-badge.html     { background: #2a1a3a; color: var(--purple); }
+  .type-badge.code     { background: #1a2a3a; color: var(--accent); }
+  .type-badge.image    { background: #2a2a1a; color: var(--orange); }
+  .type-badge.video    { background: #2a1a1a; color: var(--red); }
+  .type-badge.mermaid  { background: #1a2a2a; color: #56d4dd; }
+  .type-badge.clear    { background: #3a1a1a; color: var(--red); }
+  .type-badge.draw     { background: #1a2a1a; color: #7ee07e; }
+  .type-badge.app      { background: #2a1a2a; color: #e07ee0; }
+
+  .agent-badge {
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 2px 10px 2px 6px;
+    margin-left: 6px;
+  }
+
+  .card .meta .timestamp {
+    color: var(--text-dim);
+    opacity: 0.7;
+  }
+
+  /* Markdown content */
+  .card.content-markdown h1 { font-size: 1.5em; margin: 16px 0 8px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .card.content-markdown h2 { font-size: 1.3em; margin: 14px 0 6px; color: var(--accent); }
+  .card.content-markdown h3 { font-size: 1.15em; margin: 12px 0 4px; }
+  .card.content-markdown p  { margin: 6px 0; }
+  .card.content-markdown ul, .card.content-markdown ol { margin: 6px 0; padding-left: 24px; }
+  .card.content-markdown li { margin: 2px 0; }
+  .card.content-markdown a  { color: var(--accent); text-decoration: none; }
+  .card.content-markdown a:hover { text-decoration: underline; }
+  .card.content-markdown blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+    margin: 8px 0;
+    color: var(--text-dim);
+  }
+  .card.content-markdown pre {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+  }
+  .card.content-markdown code {
+    font-family: var(--font);
+    font-size: 13px;
+  }
+  .card.content-markdown p > code,
+  .card.content-markdown li > code {
+    background: #1c2128;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .card.content-markdown table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    width: 100%;
+  }
+  .card.content-markdown th, .card.content-markdown td {
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    text-align: left;
+  }
+  .card.content-markdown th {
+    background: #1c2128;
+    font-weight: 600;
+  }
+  .card.content-markdown hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+  }
+  .card.content-markdown img {
+    max-width: 100%;
+    border-radius: 6px;
+    margin: 8px 0;
+  }
+
+  /* Code blocks */
+  .card.content-code pre {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+  }
+  .card.content-code code {
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* Images */
+  .card.content-image img {
+    max-width: 100%;
+    max-height: 80vh;
+    border-radius: 6px;
+    display: block;
+  }
+
+  /* Video */
+  .card.content-video video {
+    max-width: 100%;
+    border-radius: 6px;
+  }
+  .card.content-video iframe {
+    max-width: 100%;
+    border-radius: 6px;
+    aspect-ratio: 16/9;
+    width: 100%;
+  }
+
+  /* Mermaid */
+  .card.content-mermaid .mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Clear card */
+  .card.content-clear {
+    border-color: var(--red);
+    text-align: center;
+    font-style: italic;
+    color: var(--text-dim);
+  }
+
+  /* Draw — SVG */
+  .card.content-draw {
+    padding: 0;
+    overflow: hidden;
+  }
+  .card.content-draw .draw-container {
+    width: 100%;
+    overflow: auto;
+    cursor: grab;
+    position: relative;
+  }
+  .card.content-draw .draw-container:active {
+    cursor: grabbing;
+  }
+  .card.content-draw svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 70vh;
+    background: #0a0e14;
+  }
+  .card.content-draw .draw-svg-wrap {
+    overflow: hidden;
+    width: 100%;
+  }
+  .card.content-draw .draw-canvas text {
+    user-select: none;
+    pointer-events: none;
+  }
+
+  /* App — HTML sandbox */
+  .card.content-app {
+    padding: 0;
+    overflow: hidden;
+  }
+  .card.content-app .app-container {
+    display: flex;
+    flex-direction: column;
+  }
+  .card.content-app .app-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #1a1a2e;
+    border-bottom: 1px solid var(--border);
+  }
+  .card.content-app .app-title {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .card.content-app .app-fullscreen-btn {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 2px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 11px;
+    transition: all 0.2s;
+  }
+  .card.content-app .app-fullscreen-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .card.content-app .app-iframe {
+    width: 100%;
+    min-height: 400px;
+    border: none;
+    display: block;
+  }
+
+  .hljs {
+    background: transparent !important;
+    padding: 0 !important;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a2a1e;
+    border: 1px solid var(--green);
+    color: var(--green);
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-family: var(--font);
+    font-size: 13px;
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <a href="/?board={{ board_id }}" class="back-btn">← Back to board</a>
+  <span class="title">canvas</span>
+  <span class="separator">/</span>
+  <span class="board-name">{{ board_id }}</span>
+  <span class="separator">/</span>
+  <span class="title" style="font-weight:400;">card</span>
+  <span id="card-id-display" title="{{ card_id }}">{{ short_id }}</span>
+  <button id="copy-link-btn" class="copy-link-btn" title="Copy link to this card">🔗 Copy link</button>
+  <button id="edit-btn" class="tool-btn edit-btn" title="Edit this card" style="display:none;">✏️ Edit</button>
+  <button id="delete-btn" class="tool-btn delete-btn" title="Delete this card" style="display:none;">🗑️ Delete</button>
+  <span class="status">
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">connecting</span>
+  </span>
+</div>
+
+<div id="content">
+  <div id="card-container">
+    {% if not found %}
+    <div id="not-found">
+      <span class="emoji">🔍</span>
+      <h2>Card not found</h2>
+      <p>No card with ID <code>{{ card_id }}</code> exists, or it may have expired.</p>
+      <p><a href="/">← Back to board</a></p>
+    </div>
+    {% endif %}
+
+    <!-- Edit container -->
+    <div id="edit-container">
+      <textarea id="edit-textarea"></textarea>
+      <div id="edit-actions">
+        <button id="save-btn" class="edit-action-btn save-btn">💾 Save</button>
+        <button id="cancel-btn" class="edit-action-btn">✕ Cancel</button>
+        <button id="delete-confirm-btn" class="edit-action-btn delete-confirm-btn">🗑️ Delete permanently</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Mermaid init -->
+<script>
+if (typeof mermaid !== 'undefined') {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+    themeVariables: {
+      background: '#161b22',
+      primaryColor: '#58a6ff',
+      secondaryColor: '#3fb950',
+      tertiaryColor: '#d29922',
+      primaryBorderColor: '#30363d',
+      secondaryBorderColor: '#30363d',
+      tertiaryBorderColor: '#30363d',
+      primaryTextColor: '#e6edf3',
+      secondaryTextColor: '#e6edf3',
+      tertiaryTextColor: '#e6edf3',
+      lineColor: '#8b949e',
+      textColor: '#e6edf3',
+      mainBkg: '#161b22',
+      nodeBorder: '#30363d',
+    }
+  });
+}
+
+// ─── Data ──────────────────────────────────────────────────────────────────
+const CARD_DATA = {{ card_data | tojson }};
+const CARD_ID = {{ card_id | tojson }};
+const BOARD_ID = {{ board_id | tojson }};
+const CANONICAL_URL = 'https://canvas.wodinga.studio/card/' + CARD_ID;
+
+// ─── Auth token (from URL query param or localStorage) ────────────────────
+let USER_TOKEN = null;
+try {
+  const urlParams = new URLSearchParams(window.location.search);
+  const tokenParam = urlParams.get('token');
+  if (tokenParam) {
+    USER_TOKEN = tokenParam;
+    localStorage.setItem('canvas_token', tokenParam);
+  } else {
+    USER_TOKEN = localStorage.getItem('canvas_token');
+  }
+} catch(e) {
+  console.warn('Token detection failed:', e);
+}
+
+// ─── Toast ─────────────────────────────────────────────────────────────────
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function showToast(msg, duration) {
+  duration = duration || 1800;
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove('show');
+  }, duration);
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function formatTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function createCard(item) {
+  const card = document.createElement('div');
+  card.className = `card content-${item.type}`;
+  card.id = 'card-' + item.id;
+
+  // Meta row
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+
+  const badge = document.createElement('span');
+  badge.className = `type-badge ${item.type}`;
+  badge.textContent = item.type.toUpperCase();
+  meta.appendChild(badge);
+
+  if (item.agent) {
+    const agent = document.createElement('span');
+    agent.className = 'agent-badge';
+    agent.textContent = (item.agent_emoji || '🤖') + ' ' + item.agent;
+    meta.appendChild(agent);
+  }
+
+  const time = document.createElement('span');
+  time.className = 'timestamp';
+  time.textContent = formatTime(item.timestamp);
+  meta.appendChild(time);
+
+  card.appendChild(meta);
+
+  // Content area
+  const body = document.createElement('div');
+  body.className = 'body';
+
+  switch (item.type) {
+    case 'markdown':
+      if (typeof marked !== 'undefined') {
+        body.innerHTML = marked.parse(item.content);
+      } else {
+        body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
+      }
+      if (typeof renderMathInElement !== 'undefined') {
+        renderMathInElement(body, {
+          delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '$', right: '$', display: false},
+            {left: '\\(', right: '\\)', display: false},
+            {left: '\\[', right: '\\]', display: true}
+          ],
+          throwOnError: false
+        });
+      }
+      if (typeof hljs !== 'undefined') {
+        body.querySelectorAll('pre code').forEach(block => {
+          hljs.highlightElement(block);
+        });
+      }
+      break;
+
+    case 'html':
+      body.innerHTML = item.content;
+      break;
+
+    case 'code':
+      body.innerHTML = `<pre><code>${escapeHtml(item.content)}</code></pre>`;
+      if (typeof hljs !== 'undefined') {
+        body.querySelectorAll('pre code').forEach(block => {
+          hljs.highlightElement(block);
+        });
+      }
+      break;
+
+    case 'image':
+      body.innerHTML = `<img src="${escapeHtml(item.content)}" alt="canvas image" loading="lazy">`;
+      break;
+
+    case 'video':
+      const ytMatch = item.content.match(
+        /(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]+)/
+      );
+      if (ytMatch) {
+        body.innerHTML = `<iframe src="https://www.youtube.com/embed/${ytMatch[1]}?autoplay=1" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+      } else {
+        body.innerHTML = `<video controls autoplay><source src="${escapeHtml(item.content)}" type="video/mp4">Your browser does not support video.</video>`;
+      }
+      break;
+
+    case 'mermaid':
+      const mermaidId = 'mermaid-' + item.id;
+      body.innerHTML = `<pre class="mermaid" id="${mermaidId}">${escapeHtml(item.content)}</pre>`;
+      if (typeof mermaid !== 'undefined') {
+        try {
+          const mermaidEl = body.querySelector('#' + mermaidId);
+          if (mermaidEl) {
+            mermaid.run({ nodes: [mermaidEl] });
+          }
+        } catch(e) {
+          console.warn('Mermaid render error:', e);
+          body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
+        }
+      } else {
+        body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
+      }
+      break;
+
+    case 'draw':
+      const shapes = item.content.shapes || [];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      shapes.forEach(s => {
+        if (s.type === 'rect') {
+          minX = Math.min(minX, s.x, s.x + s.w);
+          minY = Math.min(minY, s.y, s.y + s.h);
+          maxX = Math.max(maxX, s.x, s.x + s.w);
+          maxY = Math.max(maxY, s.y, s.y + s.h);
+        } else if (s.type === 'circle') {
+          minX = Math.min(minX, s.cx - s.r);
+          minY = Math.min(minY, s.cy - s.r);
+          maxX = Math.max(maxX, s.cx + s.r);
+          maxY = Math.max(maxY, s.cy + s.r);
+        } else if (s.type === 'arrow' || s.type === 'line') {
+          minX = Math.min(minX, s.x1, s.x2);
+          minY = Math.min(minY, s.y1, s.y2);
+          maxX = Math.max(maxX, s.x1, s.x2);
+          maxY = Math.max(maxY, s.y1, s.y2);
+        } else if (s.type === 'text') {
+          minX = Math.min(minX, s.x);
+          minY = Math.min(minY, s.y - (s.size || 14));
+          maxX = Math.max(maxX, s.x + (s.text || '').length * (s.size || 14) * 0.6);
+          maxY = Math.max(maxY, s.y + 4);
+        }
+      });
+      if (!isFinite(minX)) { minX = 0; minY = 0; maxX = 800; maxY = 600; }
+      const pad = 40;
+      const svgW = maxX - minX + pad * 2;
+      const svgH = maxY - minY + pad * 2;
+      const viewX = minX - pad;
+      const viewY = minY - pad;
+
+      let svgContent = '';
+      shapes.forEach(s => {
+        switch (s.type) {
+          case 'rect':
+            svgContent += `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" fill="${s.fill || 'none'}" stroke="${s.stroke || '#fff'}" stroke-width="${s['stroke-width'] || 2}" rx="${s.rx || 4}" />`;
+            if (s.label) {
+              svgContent += `<text x="${s.x + s.w/2}" y="${s.y + s.h/2}" fill="${s['label-color'] || '#fff'}" font-size="${s['label-size'] || 12}" text-anchor="middle" dominant-baseline="middle" font-family="var(--font)">${escapeHtml(s.label)}</text>`;
+            }
+            break;
+          case 'circle':
+            svgContent += `<circle cx="${s.cx}" cy="${s.cy}" r="${s.r}" fill="${s.fill || 'none'}" stroke="${s.stroke || '#fff'}" stroke-width="${s['stroke-width'] || 2}" />`;
+            if (s.label) {
+              svgContent += `<text x="${s.cx}" y="${s.cy}" fill="${s['label-color'] || '#fff'}" font-size="${s['label-size'] || 12}" text-anchor="middle" dominant-baseline="middle" font-family="var(--font)">${escapeHtml(s.label)}</text>`;
+            }
+            break;
+          case 'line':
+            svgContent += `<line x1="${s.x1}" y1="${s.y1}" x2="${s.x2}" y2="${s.y2}" stroke="${s.stroke || '#fff'}" stroke-width="${s['stroke-width'] || 2}" />`;
+            break;
+          case 'arrow':
+            const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+            const angle = Math.atan2(dy, dx);
+            const hl = Math.min(12, Math.hypot(dx, dy) * 0.3);
+            const ha = Math.PI / 6;
+            const ax = s.x2 - hl * Math.cos(angle - ha);
+            const ay = s.y2 - hl * Math.sin(angle - ha);
+            const bx = s.x2 - hl * Math.cos(angle + ha);
+            const by = s.y2 - hl * Math.sin(angle + ha);
+            svgContent += `<line x1="${s.x1}" y1="${s.y1}" x2="${s.x2}" y2="${s.y2}" stroke="${s.stroke || '#fff'}" stroke-width="${s['stroke-width'] || 2}" />`;
+            svgContent += `<polygon points="${s.x2},${s.y2} ${ax},${ay} ${bx},${by}" fill="${s.stroke || '#fff'}" />`;
+            if (s.label) {
+              const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2;
+              svgContent += `<text x="${mx}" y="${my - 8}" fill="${s['label-color'] || '#8b949e'}" font-size="11" text-anchor="middle" font-family="var(--font)">${escapeHtml(s.label)}</text>`;
+            }
+            break;
+          case 'text':
+            svgContent += `<text x="${s.x}" y="${s.y}" fill="${s.color || '#fff'}" font-size="${s.size || 14}" font-family="var(--font)">${escapeHtml(s.text)}</text>`;
+            break;
+        }
+      });
+
+      body.innerHTML = `<div class="draw-container"><div class="draw-svg-wrap"><svg viewBox="${viewX} ${viewY} ${svgW} ${svgH}" xmlns="http://www.w3.org/2000/svg"><g class="draw-canvas">${svgContent}</g></svg></div></div>`;
+
+      const svgEl = body.querySelector('svg');
+      let isPanning = false, panStart = {x:0,y:0}, panOffset = {x:0,y:0};
+      let currentScale = 1;
+
+      body.querySelector('.draw-container').addEventListener('wheel', e => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        currentScale = Math.max(0.2, Math.min(5, currentScale * delta));
+        const g = svgEl.querySelector('.draw-canvas');
+        g.setAttribute('transform', `translate(${panOffset.x},${panOffset.y}) scale(${currentScale})`);
+        g.setAttribute('transform-origin', 'center');
+      }, {passive: false});
+
+      svgEl.addEventListener('mousedown', e => {
+        if (e.button === 0) {
+          isPanning = true;
+          panStart = {x: e.clientX - panOffset.x, y: e.clientY - panOffset.y};
+          svgEl.style.cursor = 'grabbing';
+          e.preventDefault();
+        }
+      });
+      svgEl.addEventListener('mousemove', e => {
+        if (!isPanning) return;
+        panOffset = {x: e.clientX - panStart.x, y: e.clientY - panStart.y};
+        const g = svgEl.querySelector('.draw-canvas');
+        g.setAttribute('transform', `translate(${panOffset.x},${panOffset.y}) scale(${currentScale})`);
+        e.preventDefault();
+      });
+      svgEl.addEventListener('mouseup', () => {
+        isPanning = false;
+        svgEl.style.cursor = '';
+      });
+      svgEl.addEventListener('mouseleave', () => {
+        isPanning = false;
+        svgEl.style.cursor = '';
+      });
+      break;
+
+    case 'app':
+      const appHtml = item.content;
+      const appTitle = item.title || 'Sandbox';
+      const iframeId = 'iframe-' + item.id;
+      body.innerHTML = `<div class="app-container"><div class="app-toolbar"><span class="app-title">⧉ ${escapeHtml(appTitle)}</span><button class="app-fullscreen-btn" data-iframe="${iframeId}">⛶ fullscreen</button></div><iframe id="${iframeId}" srcdoc="${escapeHtml(appHtml)}" sandbox="allow-scripts" class="app-iframe"></iframe></div>`;
+      const fsBtn = body.querySelector('.app-fullscreen-btn');
+      fsBtn.addEventListener('click', () => {
+        const iframe = document.getElementById(iframeId);
+        if (iframe.requestFullscreen) {
+          iframe.requestFullscreen();
+        } else if (iframe.webkitRequestFullscreen) {
+          iframe.webkitRequestFullscreen();
+        }
+      });
+      break;
+
+    case 'clear':
+      card.innerHTML = '';
+      const clearMsg = document.createElement('div');
+      clearMsg.style.textAlign = 'center';
+      clearMsg.style.padding = '20px';
+      clearMsg.style.color = 'var(--text-dim)';
+      clearMsg.style.fontStyle = 'italic';
+      clearMsg.textContent = '── board cleared ──';
+      card.appendChild(clearMsg);
+      break;
+  }
+
+  card.appendChild(body);
+  return card;
+}
+
+function renderCard(item) {
+  const container = document.getElementById('card-container');
+  container.innerHTML = '';
+  const card = createCard(item);
+  container.appendChild(card);
+}
+
+// ─── SSE Stream ───────────────────────────────────────────────────────────
+
+function connectSSE() {
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const eventSource = new EventSource('/stream/' + BOARD_ID);
+
+  eventSource.onopen = () => {
+    statusDot.className = 'status-dot';
+    statusText.textContent = 'connected';
+  };
+
+  eventSource.onmessage = (event) => {
+    if (!event.data || event.data.trim() === '') return;
+    try {
+      const item = JSON.parse(event.data);
+
+      // Filter: only update for this specific card (or clear events)
+      if (item.type === 'clear') {
+        showToast('Board was cleared — card may no longer exist');
+        // Leave current card in place; user can navigate back
+        return;
+      }
+
+      if (item.id === CARD_ID) {
+        renderCard(item);
+        document.title = 'canvas / card / ' + (item.title || CARD_ID.substring(0, 8));
+        showToast('Card updated live');
+      }
+    } catch (e) {
+      console.warn('Failed to parse SSE data:', e);
+    }
+  };
+
+  eventSource.onerror = () => {
+    statusDot.className = 'status-dot disconnected';
+    statusText.textContent = 'disconnected';
+    eventSource.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+// ─── Copy Link Button ────────────────────────────────────────────────────
+
+document.getElementById('copy-link-btn').addEventListener('click', function() {
+  navigator.clipboard.writeText(CANONICAL_URL).then(() => {
+    showToast('Link copied!');
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = CANONICAL_URL;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Link copied!');
+  });
+});
+
+// ─── Edit & Delete helpers ────────────────────────────────────────────────
+
+let isEditMode = false;
+
+function showEditButtons() {
+  const editBtn = document.getElementById('edit-btn');
+  const deleteBtn = document.getElementById('delete-btn');
+  if (editBtn) editBtn.style.display = '';
+  if (deleteBtn) deleteBtn.style.display = '';
+}
+
+function enterEditMode() {
+  isEditMode = true;
+  const editContainer = document.getElementById('edit-container');
+  const textarea = document.getElementById('edit-textarea');
+  const cardContainer = document.getElementById('card-container');
+  const editBtn = document.getElementById('edit-btn');
+
+  // Pre-fill textarea with current card content
+  let currentContent = '';
+  if (CARD_DATA && CARD_DATA.content) {
+    currentContent = typeof CARD_DATA.content === 'object'
+      ? JSON.stringify(CARD_DATA.content, null, 2)
+      : CARD_DATA.content;
+  }
+  textarea.value = currentContent;
+
+  editContainer.classList.add('visible');
+  cardContainer.style.display = 'none';
+  if (editBtn) editBtn.classList.add('active');
+  textarea.focus();
+}
+
+function exitEditMode(saved) {
+  isEditMode = false;
+  const editContainer = document.getElementById('edit-container');
+  const cardContainer = document.getElementById('card-container');
+  const editBtn = document.getElementById('edit-btn');
+
+  editContainer.classList.remove('visible');
+  cardContainer.style.display = '';
+  if (editBtn) editBtn.classList.remove('active');
+}
+
+function apiRequest(method, callback) {
+  if (!USER_TOKEN) {
+    showToast('No auth token. Add ?token=xxx to URL.');
+    return;
+  }
+  const payload = {
+    type: CARD_DATA.type || 'markdown',
+    content: document.getElementById('edit-textarea').value,
+    title: CARD_DATA.title || '',
+  };
+
+  fetch('/card/' + CARD_ID, {
+    method: method,
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + USER_TOKEN
+    },
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json().then(data => ({status: r.status, data})))
+  .then(({status, data}) => {
+    if (status >= 200 && status < 300) {
+      if (callback) callback(data);
+    } else {
+      showToast('Error: ' + (data.error || status));
+    }
+  })
+  .catch(err => {
+    showToast('Request failed: ' + err.message);
+  });
+}
+
+function deleteCard() {
+  if (!USER_TOKEN) {
+    showToast('No auth token. Add ?token=xxx to URL.');
+    return;
+  }
+  if (!confirm('Delete this card permanently?')) return;
+
+  fetch('/card/' + CARD_ID, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': 'Bearer ' + USER_TOKEN
+    }
+  })
+  .then(r => r.json().then(data => ({status: r.status, data})))
+  .then(({status, data}) => {
+    if (status >= 200 && status < 300) {
+      showToast('Card deleted');
+      // Show not-found state
+      document.getElementById('card-container').innerHTML =
+        '<div id="not-found"><span class="emoji">🗑️</span><h2>Card deleted</h2><p><a href="/">← Back to board</a></p></div>';
+      exitEditMode();
+      document.getElementById('edit-btn').style.display = 'none';
+      document.getElementById('delete-btn').style.display = 'none';
+    } else {
+      showToast('Error: ' + (data.error || status));
+    }
+  })
+  .catch(err => {
+    showToast('Delete failed: ' + err.message);
+  });
+}
+
+// ─── Event listeners for edit/delete ─────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (!USER_TOKEN) return;
+  if (!FOUND) return;
+
+  showEditButtons();
+
+  const editBtn = document.getElementById('edit-btn');
+  const deleteBtn = document.getElementById('delete-btn');
+  const saveBtn = document.getElementById('save-btn');
+  const cancelBtn = document.getElementById('cancel-btn');
+  const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+
+  if (editBtn) {
+    editBtn.addEventListener('click', () => {
+      if (isEditMode) {
+        exitEditMode(false);
+      } else {
+        enterEditMode();
+      }
+    });
+  }
+
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', deleteCard);
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      apiRequest('PUT', (data) => {
+        showToast('Card updated');
+        exitEditMode(true);
+        // Reload the page to show updated content
+        window.location.reload();
+      });
+    });
+  }
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      exitEditMode(false);
+    });
+  }
+
+  if (deleteConfirmBtn) {
+    deleteConfirmBtn.addEventListener('click', deleteCard);
+  }
+});
+
+// ─── Init ──────────────────────────────────────────────────────────────────
+
+const FOUND = {{ found | tojson }};
+
+if (FOUND) {
+  renderCard(CARD_DATA);
+  connectSSE();
+}
+</script>
+
+</body>
+</html>

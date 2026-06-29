@@ -768,7 +768,7 @@ function createCard(item) {
   permalink.title = 'Copy permalink';
   permalink.addEventListener('click', function(e) {
     e.stopPropagation();
-    const url = 'https://canvas.wodinga.studio/#card-' + item.id;
+    const url = 'https://canvas.wodinga.studio/card/' + item.id;
     navigator.clipboard.writeText(url).then(() => {
       showToast('Copied!');
     }).catch(() => {
@@ -1033,11 +1033,14 @@ function addCard(item, isHistory) {
 
   // ── Update existing card if this is an explicit update ────────────
   if (item.action === 'update') {
-    const existing = document.getElementById('card-' + item.id);
+    const lookupId = 'card-' + item.id;
+    console.log('SSE update received:', item.id.slice(0,8), 'looking for #'+lookupId);
+    const existing = document.getElementById(lookupId);
+    console.log('  Found in DOM:', !!existing);
     if (existing) {
-      console.log('Updating card:', item.id);
       const newCard = createCard(item);
       existing.parentNode.replaceChild(newCard, existing);
+      console.log('  Card replaced');
 
       // If this card is in the URL hash, re-scroll to it
       if (window.location.hash === '#card-' + item.id) {
@@ -1046,6 +1049,8 @@ function addCard(item, isHistory) {
         }, 50);
       }
       return;
+    } else {
+      console.warn('Update target #card-' + item.id.slice(0,8) + ' not in DOM — creating new card');
     }
   }
 

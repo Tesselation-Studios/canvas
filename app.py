@@ -6,18 +6,70 @@ Casper pushes, Raf views. SSE-based, multi-board.
 import json
 import os
 import queue
+import secrets
 import sqlite3
 import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, Response, jsonify, make_response
+from functools import wraps
+
+from flask import Flask, g, render_template, request, Response, jsonify, make_response
 
 app = Flask(__name__)
 
 # ── Live-editing: template changes take effect immediately, no restart ──
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
+
+# ── Load .env file (if present) ──────────────────────────────────────────
+_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_ENV_PATH):
+    with open(_ENV_PATH) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k, _v)
+
+# ── Admin token (from .env — used for /reload and /token) ──
+CANVAS_TOKEN = os.environ.get("CANVAS_TOKEN", "")
+
+
+# ── Auth helpers ────────────────────────────────────────────────────────────
+
+def require_token(f):
+    """Decorator for /push — validates Bearer token against users table.
+    Sets g.agent and g.agent_emoji from the matched user."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return jsonify({"error": "unauthorized — missing or malformed token"}), 401
+        token = auth[7:]
+        conn = get_db()
+        row = conn.execute("SELECT agent, agent_emoji FROM users WHERE token = ?", (token,)).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "unauthorized — invalid token"}), 401
+        g.agent = row["agent"]
+        g.agent_emoji = row["agent_emoji"]
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_admin_token(f):
+    """Decorator for admin endpoints (/reload, /token) — validates against CANVAS_TOKEN env var."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return jsonify({"error": "unauthorized — missing or malformed admin token"}), 401
+        token = auth[7:]
+        if token != CANVAS_TOKEN:
+            return jsonify({"error": "unauthorized — invalid admin token"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 # ── SQLite database ────────────────────────────────────────────────────────
 
@@ -55,6 +107,37 @@ def init_db():
         conn.execute("ALTER TABLE cards ADD COLUMN expires_at TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+    # ── Users table (token auth) ────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            agent TEXT PRIMARY KEY,
+            token TEXT NOT NULL,
+            agent_emoji TEXT
+        )
+    """)
+
+    # Seed casper user if users table is empty
+    existing = list(conn.execute("SELECT 1 FROM users LIMIT 1"))
+    if not existing:
+        casper_token = secrets.token_hex(32)
+        conn.execute(
+            "INSERT INTO users (agent, token, agent_emoji) VALUES (?, ?, ?)",
+            ("casper", casper_token, "👻"),
+        )
+        print(f"[init_db] Seeded casper user with token: {casper_token}")
+        # Persist to project .env for agents to discover
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        try:
+            with open(env_path, "r") as f:
+                env_content = f.read()
+            if "CASPER_TOKEN" not in env_content:
+                with open(env_path, "a") as f:
+                    f.write(f"\n# Auto-generated token for casper agent\nCASPER_TOKEN={casper_token}\n")
+                print(f"[init_db] Appended CASPER_TOKEN to {env_path}")
+        except Exception as e:
+            print(f"[init_db] Warning: could not write CASPER_TOKEN to .env: {e}")
+
     conn.commit()
     conn.close()
 
@@ -158,7 +241,249 @@ def board_exists(name):
     return name in BOARDS
 
 
+def find_card_by_id(card_id):
+    """Find a card by ID across all boards. Returns (board_id, item) or (None, None)."""
+    for board_id, board in BOARDS.items():
+        for item in board:
+            if item["id"] == card_id:
+                return board_id, item
+    return None, None
+
+
 # ─── Routes ────────────────────────────────────────────────────────────────
+
+
+@app.route("/card/<card_id>")
+def card_page(card_id):
+    """Standalone card page — renders a single card at /card/<uuid>."""
+    conn = get_db()
+    row = conn.execute(
+        """SELECT * FROM cards
+           WHERE id = ?
+             AND (expires_at IS NULL OR expires_at > datetime('now'))""",
+        (card_id,),
+    ).fetchone()
+    conn.close()
+
+    if row is None:
+        # Card not found — show clean 404
+        return render_template(
+            "card.html",
+            card_data={"type": "not_found", "content": ""},
+            card_id=card_id,
+            short_id=card_id[:8] if card_id else "???",
+            board_id="main",
+            found=False,
+        ), 404
+
+    content = row["content"]
+    # Parse JSON-stringified content back to objects (e.g. draw shapes)
+    if content and isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, (dict, list)):
+                content = parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    item = {
+        "id": row["id"],
+        "type": row["type"],
+        "content": content,
+        "title": row["title"] or "",
+        "agent": row["agent"] or "",
+        "agent_emoji": row["agent_emoji"] or "",
+        "timestamp": row["timestamp"],
+        "expires_at": row["expires_at"],
+    }
+
+    response = make_response(render_template(
+        "card.html",
+        card_data=item,
+        card_id=row["id"],
+        short_id=row["id"][:8],
+        board_id=row["board"],
+        found=True,
+    ))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.route("/card/<card_id>", methods=["PUT"])
+@require_token
+def update_card(card_id):
+    """Update a card by ID. Full update — requires type, content."""
+    data = request.get_json(force=True)
+    content_type = data.get("type", "markdown")
+    content = data.get("content", "")
+    title = data.get("title", "")
+
+    agent = g.agent
+    agent_emoji = g.agent_emoji
+
+    board_id, item = find_card_by_id(card_id)
+
+    if item is None:
+        # Fallback: reconstruct from SQLite
+        conn = get_db()
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "card not found"}), 404
+        board_id = row["board"]
+        content_val = row["content"]
+        if content_val and isinstance(content_val, str):
+            try:
+                parsed = json.loads(content_val)
+                if isinstance(parsed, (dict, list)):
+                    content_val = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        item = {
+            "id": row["id"],
+            "type": row["type"],
+            "content": content_val,
+            "title": row["title"] or "",
+            "agent": row["agent"] or "",
+            "agent_emoji": row["agent_emoji"] or "",
+            "timestamp": row["timestamp"],
+            "expires_at": row["expires_at"],
+        }
+        BOARDS[board_id].append(item)
+
+    # Update in-place
+    item["type"] = content_type
+    item["content"] = content
+    item["title"] = title
+    item["agent"] = agent
+    item["agent_emoji"] = agent_emoji
+
+    save_card_to_db(board_id, item)
+
+    # SSE notification
+    update_item = dict(item)
+    update_item["action"] = "update"
+    dead = set()
+    for q in SUBSCRIBERS[board_id]:
+        try:
+            q.put_nowait(update_item)
+        except queue.Full:
+            dead.add(q)
+    SUBSCRIBERS[board_id] -= dead
+
+    return jsonify({"status": "ok", "action": "update", "id": card_id})
+
+
+@app.route("/card/<card_id>", methods=["PATCH"])
+@require_token
+def patch_card(card_id):
+    """Partial update of a card. Only updates fields present in the body."""
+    data = request.get_json(force=True)
+    agent = g.agent
+    agent_emoji = g.agent_emoji
+
+    board_id, item = find_card_by_id(card_id)
+
+    if item is None:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "card not found"}), 404
+        content_val = row["content"]
+        if content_val and isinstance(content_val, str):
+            try:
+                parsed = json.loads(content_val)
+                if isinstance(parsed, (dict, list)):
+                    content_val = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        board_id = row["board"]
+        item = {
+            "id": row["id"],
+            "type": row["type"],
+            "content": content_val,
+            "title": row["title"] or "",
+            "agent": row["agent"] or "",
+            "agent_emoji": row["agent_emoji"] or "",
+            "timestamp": row["timestamp"],
+            "expires_at": row["expires_at"],
+        }
+        BOARDS[board_id].append(item)
+
+    if "type" in data:
+        item["type"] = data["type"]
+    if "content" in data:
+        item["content"] = data["content"]
+    if "title" in data:
+        item["title"] = data["title"]
+
+    item["agent"] = agent
+    item["agent_emoji"] = agent_emoji
+
+    save_card_to_db(board_id, item)
+
+    update_item = dict(item)
+    update_item["action"] = "update"
+    dead = set()
+    for q in SUBSCRIBERS[board_id]:
+        try:
+            q.put_nowait(update_item)
+        except queue.Full:
+            dead.add(q)
+    SUBSCRIBERS[board_id] -= dead
+
+    return jsonify({"status": "ok", "action": "update", "id": card_id})
+
+
+@app.route("/card/<card_id>", methods=["DELETE"])
+@require_token
+def delete_card(card_id):
+    """Remove a card by ID."""
+    agent = g.agent
+    agent_emoji = g.agent_emoji
+
+    board_id, item = find_card_by_id(card_id)
+
+    if item is None:
+        conn = get_db()
+        row = conn.execute("SELECT board FROM cards WHERE id = ?", (card_id,)).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "card not found"}), 404
+        board_id = row["board"]
+
+    # Remove from in-memory
+    if board_id in BOARDS:
+        BOARDS[board_id] = [c for c in BOARDS[board_id] if c["id"] != card_id]
+
+    # Remove from SQLite
+    conn = get_db()
+    conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    conn.commit()
+    conn.close()
+
+    # SSE notification
+    delete_event = {
+        "id": card_id,
+        "type": "clear",
+        "action": "deleted",
+        "content": "",
+        "timestamp": time.time(),
+        "agent": agent,
+        "agent_emoji": agent_emoji,
+    }
+    dead = set()
+    for q in SUBSCRIBERS[board_id]:
+        try:
+            q.put_nowait(delete_event)
+        except queue.Full:
+            dead.add(q)
+    SUBSCRIBERS[board_id] -= dead
+
+    return jsonify({"status": "ok", "action": "deleted"})
 
 
 @app.route("/")
@@ -179,14 +504,16 @@ def test():
 
 
 @app.route("/push", methods=["POST"])
+@require_token
 def push():
     data = request.get_json(force=True)
     board_id = data.get("board", "main")
     content_type = data.get("type", "markdown")
     content = data.get("content", "")
     stream_only = data.get("stream_only", False)
-    agent = data.get("agent", "unknown")
-    agent_emoji = data.get("agent_emoji", "🤖")
+    # ── Agent identity ← from auth (payload values are overridden) ────
+    agent = g.agent
+    agent_emoji = g.agent_emoji
     card_id = data.get("card_id")
 
     # ── Clear board ────────────────────────────────────────────────────
@@ -197,9 +524,16 @@ def push():
 
     # ── Parse expires_at ─────────────────────────────────────────────
     expires_at = data.get("expires_at")
-    # If expires_at is set, validation: it should be an ISO 8601 string
+    # Default: 1 year from now if not specified
+    # Explicit null means never expires (stored as SQL NULL)
+    if "expires_at" not in data:
+        from datetime import timedelta
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
+    elif expires_at is None:
+        expires_at = None  # Explicit null → never expires
+    # Validation: must be a string if not None
     if expires_at is not None and not isinstance(expires_at, str):
-        return jsonify({"error": "expires_at must be an ISO 8601 string"}), 400
+        return jsonify({"error": "expires_at must be an ISO 8601 string or null"}), 400
 
     # ── Build item: update or create ───────────────────────────────────
     is_update = False
@@ -420,10 +754,64 @@ def health():
 
 
 @app.route("/reload", methods=["POST"])
+@require_admin_token
 def reload_templates():
     """Reload templates without restart — use after editing index.html."""
     app.jinja_env.cache.clear()
     return jsonify({"status": "ok", "message": "Templates reloaded"})
+
+
+@app.route("/token", methods=["POST", "DELETE"])
+@require_admin_token
+def manage_tokens():
+    """Create or revoke agent tokens.
+
+    POST /token  — Create or update an agent token
+        Body: {"agent": "hermes", "agent_emoji": "🧠", "token": "<custom>"}
+        If token omitted, auto-generates a 256-bit hex token.
+
+    DELETE /token  — Revoke an agent token
+        Body: {"agent": "hermes"}
+    """
+    conn = get_db()
+
+    if request.method == "DELETE":
+        data = request.get_json(force=True)
+        agent_name = data.get("agent", "")
+        if not agent_name:
+            conn.close()
+            return jsonify({"error": "missing field: agent"}), 400
+        conn.execute("DELETE FROM users WHERE agent = ?", (agent_name,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok", "agent": agent_name, "action": "revoked"})
+
+    # POST — create or update token
+    data = request.get_json(force=True)
+    agent_name = data.get("agent", "")
+    agent_emoji = data.get("agent_emoji", "🤖")
+    if not agent_name:
+        conn.close()
+        return jsonify({"error": "missing field: agent"}), 400
+
+    token = data.get("token")
+    if not token:
+        token = secrets.token_hex(32)  # 256-bit random token
+
+    conn.execute(
+        "INSERT OR REPLACE INTO users (agent, token, agent_emoji) VALUES (?, ?, ?)",
+        (agent_name, token, agent_emoji),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "ok",
+        "agent": agent_name,
+        "agent_emoji": agent_emoji,
+        "token": token,
+        "action": "created" if request.method == "POST" else "revoked",
+    })
 
 
 if __name__ == "__main__":

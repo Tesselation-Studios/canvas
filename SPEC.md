@@ -14,6 +14,7 @@
 | 2 | 2026-06-27 | Remove all trading references; genericize board examples |
 | 3 | 2026-06-29 | Update to reflect deployed reality: no Docker, SQLite persistence, card permalinks, card editing, full CDN template, draw/app content types, newest-first scrolling, nohup runtime, known limitations |
 | 4 | 2026-06-29 | Lazy loading (infinite scroll via paginated history), card expiry (`expires_at` column), GitHub repo, issue tracker, updated known issues |
+| 5 | 2026-06-29 | User-specific token auth — `users` table, `require_token` on `/push`, `/token` admin endpoint, agent identity is now auth-bound |
 
 ---
 
@@ -248,7 +249,11 @@ https://canvas.wodinga.studio
 
 ### Authentication
 
-All `/push` requests require an `Authorization: Bearer <token>` header. Token is shared between agents and Canvas via `CANVAS_TOKEN` environment variable.
+All `/push` requests require an `Authorization: Bearer <token>` header.
+Tokens are per-agent, stored in the `users` SQLite table.
+Authentication also enforces identity — the `agent` and `agent_emoji` in the payload are **overridden** by the authenticated user.
+
+Admin endpoints (`/reload`, `/token`) use the global `CANVAS_TOKEN` from the `.env` file.
 
 > See §5 for full auth specification.
 
@@ -261,7 +266,9 @@ The single endpoint for all content pushes.
 | Header | Required | Value |
 |---|---|---|
 | `Content-Type` | yes | `application/json` |
-| `Authorization` | yes | `Bearer <CANVAS_TOKEN>` |
+| `Authorization` | yes | `Bearer <USER_TOKEN>` (from `users` table) |
+
+> **Identity override:** The `agent` and `agent_emoji` fields in the request body are **ignored**. The authenticated user's identity (from the `users` table) is always used. This prevents impersonation.
 
 #### Common Fields
 
@@ -271,8 +278,8 @@ The single endpoint for all content pushes.
 | `content` | string/object | yes | — | The content body (string for most types; object with `shapes` array for `draw`) |
 | `board` | string | no | `"main"` | Board to push to |
 | `title` | string | no | `""` | Optional heading/title for the card |
-| `agent` | string | no | `"unknown"` | Agent name (displayed on card) |
-| `agent_emoji` | string | no | `"🤖"` | Agent emoji badge (displayed on card) |
+| `agent` | string | no | *(from auth)* | **Ignored** — overridden by authenticated user |
+| `agent_emoji` | string | no | *(from auth)* | **Ignored** — overridden by authenticated user |
 | `stream_only` | bool | no | `false` | If true, don't persist to history (ephemeral) |
 | `card_id` | string | no | `null` | If provided, updates an existing card by UUID in-place instead of creating a new one |
 
@@ -478,6 +485,34 @@ Behavior:
 | `GET` | `/health` | No | Health check |
 | `POST` | `/reload` | **Token** | Reload Jinja templates without restart |
 
+
+### PUT /card/<card_id>
+
+Update an existing card. Requires user token auth (same as POST /push).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | New content |
+| `type` | string | no | Content type (defaults to existing) |
+| `title` | string | no | Card title (defaults to existing) |
+| `board` | string | no | Move card to different board |
+
+Agent identity comes from auth token — cannot be overridden in payload.
+
+**Success:** `{"status": "ok", "action": "update", "id": "<card_id>"}`
+**Error:** `{"error": "card not found"}` (404), `{"error": "missing field: content"}` (400)
+
+### PATCH /card/<card_id>
+
+Like PUT but partial — only fields in the body are updated. Omitting a field keeps the existing value.
+
+### DELETE /card/<card_id>
+
+Remove a card. Sends SSE clear event to subscribers.
+
+**Success:** `{"status": "ok", "action": "deleted"}`
+**Error:** `{"error": "card not found"}` (404)
+
 ### Viewer Access Model
 
 | User | Access | Notes |
@@ -495,27 +530,151 @@ Why LAN-only viewing but token-based push from agents?
 
 ## 5. Auth & Access
 
+### Overview
+
+Canvas uses a **two-tier token model:**
+
+| Token Type | Used For | Stored In | Set By |
+|---|---|---|---|
+| **User token** (per-agent) | `POST /push` | `users` SQLite table | Auto-generated on first startup, or created via `POST /token` |
+| **Admin token** (global) | `POST /reload`, `POST /token`, `DELETE /token` | `CANVAS_TOKEN` env var (`.env` file) | Set manually in `.env` |
+
 ### Access Model Summary
 
 | Traffic | Auth | Mechanism |
 |---|---|---|
 | Viewing (browser) | **LAN-only** | Traefik `lan-only` middleware (192.168.1.0/24, 100.64.0.0/10, 172.x.x.x) |
-| Pushing (agents) | **Bearer token** | `Authorization: Bearer <CANVAS_TOKEN>` validated in Flask |
+| Pushing (agents) | **Bearer token** | `Authorization: Bearer <USER_TOKEN>` validated against `users` table |
+| Admin operations | **Bearer token** | `Authorization: Bearer <CANVAS_TOKEN>` validated against env var |
 | Health/history/boards | **LAN-only** (same as viewing) | Traefik `lan-only` middleware applies to whole router |
 | SSE stream | **LAN-only** (same as viewing) | Traefik `lan-only` middleware on the root route covers sub-paths |
 
-### Agent Push Token
+### Users Table
 
-**Generation:** A random 256-bit hex string (64 chars) generated once.
+Created on app startup via `CREATE TABLE IF NOT EXISTS`:
 
-**Storage:**
-- Set as `CANVAS_TOKEN` environment variable (in `.env` file in project root)
-- Shared with agents via environment — every agent that pushes knows the token
-- NOT hardcoded in `app.py` or checked into git
+```sql
+CREATE TABLE IF NOT EXISTS users (
+    agent TEXT PRIMARY KEY,
+    token TEXT NOT NULL,
+    agent_emoji TEXT
+);
+```
 
-**Validation (in app.py):**
+Each row represents one authorized agent. The `token` is a 256-bit hex string (64 hex chars).
 
-Currently **no token validation** is deployed on `/push`. The `require_token` decorator is defined in the spec but not wired in `app.py`. See §Current Issues for details.
+### Seed Data (First Startup)
+
+If the `users` table is empty on startup, Canvas auto-seeds a user for `casper`:
+
+| Agent | Token | Emoji |
+|---|---|---|
+| `casper` | (auto-generated via `secrets.token_hex(32)`) | `👻` |
+
+The generated token is written to the `.env` file as `CASPER_TOKEN` for agents to discover.
+
+### Endpoint Authorization
+
+#### `POST /push` — User Token Auth
+
+1. Extract `Authorization: Bearer <token>` header
+2. Look up token in `users` table: `SELECT agent, agent_emoji FROM users WHERE token = ?`
+3. **Override identity** — the `agent` and `agent_emoji` fields in the request body are replaced with the values from the authenticated user
+4. Return `401` with `{"error": "unauthorized — invalid token"}` if no match
+
+```python
+@app.route("/push", methods=["POST"])
+@require_token
+def push():
+    agent = g.agent          # from auth, NOT from payload
+    agent_emoji = g.agent_emoji  # from auth, NOT from payload
+```
+
+#### `POST /reload` and `POST|DELETE /token` — Admin Token Auth
+
+1. Extract `Authorization: Bearer <token>` header
+2. Compare token to `CANVAS_TOKEN` env var
+3. Return `401` if no match
+
+```python
+@app.route("/token", methods=["POST", "DELETE"])
+@require_admin_token
+def manage_tokens():
+    ...
+```
+
+### POST /token — Create or Update an Agent Token
+
+Admin-only endpoint. Requires `Authorization: Bearer <CANVAS_TOKEN>`.
+
+**Request:**
+
+```json
+{
+  "agent": "hermes",
+  "agent_emoji": "🧠",
+  "token": "optional-custom-token"
+}
+```
+
+If `token` is omitted, a random 256-bit token is auto-generated via `secrets.token_hex(32)`.
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "agent": "hermes",
+  "agent_emoji": "🧠",
+  "token": "a1b2c3d4e5f6...",
+  "action": "created"
+}
+```
+
+### DELETE /token — Revoke an Agent Token
+
+Admin-only endpoint. Requires `Authorization: Bearer <CANVAS_TOKEN>`.
+
+**Request:**
+
+```json
+{
+  "agent": "hermes"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "agent": "hermes",
+  "action": "revoked"
+}
+```
+
+### Token Management Lifecycle
+
+| Action | How |
+|---|---|
+| **Seed casper** | Auto-generated on first startup; written to `CASPER_TOKEN` in `.env` |
+| **Create new agent** | `curl -X POST $CANVAS_URL/token -H "Authorization: Bearer $CANVAS_TOKEN" -d '{"agent":"gonzo","agent_emoji":"🎸"}'` |
+| **Rotate token** | Same as create (replaces existing token in `users` table) |
+| **Revoke token** | `curl -X DELETE $CANVAS_URL/token -H "Authorization: Bearer $CANVAS_TOKEN" -d '{"agent":"gonzo"}'` — old token stops working immediately |
+
+### Agent Configuration
+
+Each agent needs its own token from the `users` table. For the default `casper` agent, this is available as:
+
+```
+CANVAS_URL=https://canvas.wodinga.studio
+CASPER_TOKEN=<token for casper>
+```
+
+For other agents, the token is obtained from the `POST /token` response. Agents source their token from:
+
+- Their own env var matching their agent name: e.g. `HERMES_TOKEN`, `GONZO_TOKEN`
+- Or the `.env` file at `/home/openclaw/projects/canvas/.env`
 
 ### Traefik Middleware Configuration
 
@@ -535,25 +694,13 @@ This covers:
 - `GET /boards` — board listing
 - `POST /push` — push endpoint
 - `POST /reload` — template reload
+- `POST /token` — admin token management
 
-### Token Management Lifecycle
+### Security Properties
 
-| Action | Command |
-|---|---|
-| Generate token | `openssl rand -hex 32` |
-| Rotate token | Update `CANVAS_TOKEN` in `.env`, restart canvas, update all agents |
-| Revoke token | Same as rotation — old token stops working immediately |
-
-### Agent Configuration
-
-Agents (Casper, Gonzo, etc.) should have these environment variables available:
-
-```
-CANVAS_URL=https://canvas.wodinga.studio
-CANVAS_TOKEN=<shared secret>
-```
-
-These can go in `~/.openclaw/.env` or per-agent config files.
+- **No impersonation** — `agent`/`agent_emoji` in payload are overridden by auth. An agent with `hermes` token can only push as `hermes`.
+- **Per-agent tokens** — revoking one agent doesn't affect others. No shared secret.
+- **Admin token is separate** — `CANVAS_TOKEN` only gives access to manage users and reload templates, not to push content.
 
 ---
 
@@ -674,15 +821,19 @@ All three methods read from the same configuration:
 ```bash
 # /home/openclaw/projects/canvas/.env
 CANVAS_URL=https://canvas.wodinga.studio
-CANVAS_TOKEN=9b80727bc5fee2faf3180f89031b0fb32c6c94c4430ed52f99034312cd0f21f6
+CANVAS_TOKEN=<admin token — used for /reload and /token>
+CASPER_TOKEN=<casper's user token — auto-generated on first startup>
 ```
 
-For agent systems (Casper, Gonzo, etc.), add these to `~/.openclaw/.env`:
+For agent systems (Casper, Gonzo, etc.), each agent needs its own token. For Casper:
 
 ```
+# ~/.openclaw/.env
 CANVAS_URL=http://192.168.1.73:5001
-CANVAS_TOKEN=<same token>
+CASPER_TOKEN=<casper's token from users table>
 ```
+
+Other agents (Hermes, Gonzo) obtain tokens via `POST /token` with the admin token.
 
 ---
 
@@ -900,11 +1051,16 @@ This section tracks issues discovered during deployment and testing.
 
 | # | Issue | Priority | GitHub Issue | Notes |
 |---|---|---|---|---|
-| L5 | **No auth token validation** — The `require_token` decorator is specified in the spec but not wired into `app.py`'s push route. Any LAN client can push without a token. | ⚠️ Low | [#1](https://github.com/casper-bot-wodinga/canvas/issues/1) | LAN-only Traefik middleware provides network-level protection. Token validation should be added for defense-in-depth. |
-| L6 | **gunicorn runs via nohup** — Canvas is started with `nohup python3 app.py > canvas.log 2>&1 &` instead of a proper systemd service. | ⚠️ Medium | [#2](https://github.com/casper-bot-wodinga/canvas/issues/2) | A systemd unit (`/etc/systemd/system/canvas.service`) should be created for proper lifecycle management. |
+| L6 | **Service runs via nohup** — Canvas is started with `nohup python3 app.py > canvas.log 2>&1 &` instead of a proper systemd service. | ⚠️ Medium | [#2](https://github.com/casper-bot-wodinga/canvas/issues/2) | A systemd unit (`/etc/systemd/system/canvas.service`) should be created for proper lifecycle management. |
 | L7 | **Hash redirect (SSE only, not history)** — When a new card arrives via SSE, the frontend sets `window.location.hash = 'card-<id>'`. This clutters back-button history. | ⚠️ Low | — | Should use `replaceState` instead of hash change, or only on user-initiated permalink clicks. |
 | L10 | **Board management UI missing** — No create/delete/rename boards UI in the frontend. | ⚠️ Low | [#3](https://github.com/casper-bot-wodinga/canvas/issues/3) | Boards are created lazily on first push; no way to manage them from browser. |
 | L11 | **No card deletion** — Individual cards cannot be deleted; only full board clear is supported. | ⚠️ Low | [#4](https://github.com/casper-bot-wodinga/canvas/issues/4) | Needs DELETE endpoint + SSE delete event + frontend delete button. |
+
+### ✅ Fixed / Resolved in Iteration 5
+
+| # | Issue | Resolution |
+|---|---|---|
+| L5 | **No auth token validation** — `/push` had no token check | **Implemented:** User-specific token auth via `users` table, `@require_token` on `/push`, `POST /token` for admin token management, `CASPER_TOKEN` auto-seeded on first startup. Agent identity is now auth-bound — impersonation prevented. |
 
 ---
 
@@ -927,25 +1083,94 @@ curl -s https://canvas.wodinga.studio/health
 # Expected: Same response (TLS + Traefik all working)
 ```
 
-#### Phase 2: Push Without Auth (known issue — token not validated yet)
+#### Phase 2: Push Without Auth (should fail — token required)
 
 ```bash
-# 4. Push markdown with no token (should work currently — see L5)
-curl -s -X POST http://192.168.1.73:5001/push \
+# 4. Push markdown with NO token — should get 401
+curl -s -w "\nHTTP %{http_code}\n" -X POST http://192.168.1.73:5001/push \
   -H "Content-Type: application/json" \
   -d '{
     "type":"markdown",
-    "content":"# Hello Canvas\n\n**First push!** $E=mc^2$",
-    "title":"First Test",
-    "agent":"orchestrator",
-    "agent_emoji":"🧠"
+    "content":"# Should not work"
+  }'
+
+# Expected: HTTP 401, {"error":"unauthorized — missing or malformed token"}
+```
+
+#### Phase 3: Push With Invalid Token
+
+```bash
+# 5. Push with a garbage token — should get 401
+curl -s -w "\nHTTP %{http_code}\n" -X POST http://192.168.1.73:5001/push \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer this-is-not-a-real-token" \
+  -d '{
+    "type":"markdown",
+    "content":"# Should also not work"
+  }'
+
+# Expected: HTTP 401, {"error":"unauthorized — invalid token"}
+```
+
+#### Phase 4: Push With Casper's Token (first live test)
+
+```bash
+# 6. Get casper's token from .env (auto-seeded on first startup)
+CASPER_TOKEN=$(grep CASPER_TOKEN /home/openclaw/projects/canvas/.env | cut -d= -f2)
+
+# Push with Casper's token — agent identity is overridden by auth
+curl -s -X POST http://192.168.1.73:5001/push \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CASPER_TOKEN" \
+  -d '{
+    "type":"markdown",
+    "content":"# Hello Canvas\n\n**First authenticated push!**",
+    "title":"Auth Test",
+    "agent":"malicious",
+    "agent_emoji":"💀"
   }' | jq .
 
 # Expected: {"status":"ok","id":"<uuid>","board":"main","action":"create"}
-# Status: 200
+# Note: agent="malicious", agent_emoji="💀" in payload are IGNORED.
+# Card shows agent="casper", agent_emoji="👻" from auth.
 ```
 
-#### Phase 3: SSE Live Update
+#### Phase 5: Token Management — Create Hermes via /token
+
+```bash
+# 7. Create Hermes agent token (uses admin CANVAS_TOKEN)
+ADMIN_TOKEN=$(grep CANVAS_TOKEN /home/openclaw/projects/canvas/.env | cut -d= -f2)
+RESULT=$(curl -s -X POST http://192.168.1.73:5001/token \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{
+    "agent":"hermes",
+    "agent_emoji":"🧠"
+  }')
+echo $RESULT | jq .
+HERMES_TOKEN=$(echo $RESULT | jq -r '.token')
+echo "Hermes token: $HERMES_TOKEN"
+
+# Expected: {"status":"ok","agent":"hermes","agent_emoji":"🧠","token":"<64-hex>","action":"created"}
+```
+
+#### Phase 6: Push With Hermes Token (identity override)
+
+```bash
+# 8. Push as hermes — payload says casper but auth says hermes
+curl -s -X POST http://192.168.1.73:5001/push \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $HERMES_TOKEN" \
+  -d '{
+    "type":"markdown",
+    "content":"# Hello from Hermes",
+    "agent":"casper",
+    "agent_emoji":"👻"
+  }' | jq .
+# Expected: Card shows agent="hermes", agent_emoji="🧠" — payload values IGNORED
+```
+
+#### Phase 7: SSE Live Update
 
 ```bash
 # 5. Open browser: https://canvas.wodinga.studio
@@ -1119,7 +1344,6 @@ Items not yet deployed, tracked for future iteration:
 
 | Step | What | Priority | GitHub Issue |
 |---|---|---|---|
-| 1 | Add token auth middleware to `/push` endpoint | Low | [#1](https://github.com/casper-bot-wodinga/canvas/issues/1) |
 | 2 | Create systemd unit (`canvas.service`) for auto-start and crash recovery | Medium | [#2](https://github.com/casper-bot-wodinga/canvas/issues/2) |
 | 3 | Fix hash redirect — use `replaceState` instead of setting `location.hash` on every SSE push | Low | — |
 | 4 | Add board management UI (create/delete/rename boards) | Low | [#3](https://github.com/casper-bot-wodinga/canvas/issues/3) |
@@ -1133,6 +1357,15 @@ Items not yet deployed, tracked for future iteration:
 | ✅ | **Card expiry** — `expires_at` column in SQLite; expired cards filtered from queries; agents can push with `expires_at: "2026-07-01T00:00:00"` |
 | ✅ | **GitHub setup** — Code at [casper-bot-wodinga/canvas](https://github.com/casper-bot-wodinga/canvas) with issue tracker |
 | ✅ | **SPEC update** — This document reflects lazy loading, expiry, and GitHub status |
+
+### Done in Iteration 5
+
+| Step | What |
+|---|---|
+| ✅ | **User-specific token auth** — `users` SQLite table, `@require_token` on `/push`, agent identity enforced by auth, no impersonation |
+| ✅ | **Admin token management** — `POST /token` and `DELETE /token` (protected by `CANVAS_TOKEN` admin token) for creating/revoking agent tokens |
+| ✅ | **Auto-seed casper** — On first startup, `casper` user is created with a random token; token written to `CASPER_TOKEN` in `.env` |
+| ✅ | **SPEC update** — This document reflects new auth model, updated API docs, updated env vars |
 
 ---
 

@@ -14,9 +14,10 @@ if os.path.exists(ENV_FILE):
             os.environ.setdefault(k, v)
 
 URL = os.environ.get("CANVAS_URL", "http://192.168.1.73:5001")
-TOKEN = os.environ.get("CANVAS_TOKEN", "")
+# User token for /push — try CANVAS_PUSH_TOKEN, then CASPER_TOKEN, then CANVAS_TOKEN (legacy)
+TOKEN = os.environ.get("CANVAS_PUSH_TOKEN") or os.environ.get("CASPER_TOKEN") or os.environ.get("CANVAS_TOKEN", "")
 if not TOKEN:
-    print("ERROR: CANVAS_TOKEN not found in environment or .env", file=sys.stderr)
+    print("ERROR: No push token found. Set CANVAS_PUSH_TOKEN, CASPER_TOKEN, or CANVAS_TOKEN in .env", file=sys.stderr)
     sys.exit(1)
 
 p = argparse.ArgumentParser(description="Push content to Canvas board")
@@ -27,6 +28,7 @@ p.add_argument("--title", "-T", default="")
 p.add_argument("--agent", "-a", default=os.environ.get("USER", "unknown"))
 p.add_argument("--emoji", "-e", default="🤖")
 p.add_argument("--stream-only", "-s", action="store_true")
+p.add_argument("--edit", action="store_true", help="Use PUT instead of POST (edit existing card, requires --card-id)")
 p.add_argument("content", nargs="*", help="Content to push (or pipe via stdin)")
 args = p.parse_args()
 
@@ -47,16 +49,27 @@ if args.card_id:
 if args.stream_only:
     payload["stream_only"] = True
 
-print(f"Pushing to {args.board} board ({args.type})...", file=sys.stderr)
+if args.edit:
+    if not args.card_id:
+        print("ERROR: --edit requires --card-id", file=sys.stderr)
+        sys.exit(1)
+    endpoint = f"{URL}/card/{args.card_id}"
+    method = "PUT"
+    print(f"Editing card {args.card_id} ({args.type})...", file=sys.stderr)
+else:
+    endpoint = f"{URL}/push"
+    method = "POST"
+    print(f"Pushing to {args.board} board ({args.type})...", file=sys.stderr)
+
 print(f"  Agent: {args.agent} {args.emoji}", file=sys.stderr)
 if args.title:
     print(f"  Title: {args.title}", file=sys.stderr)
 
 req = urllib.request.Request(
-    f"{URL}/push",
+    endpoint,
     data=json.dumps(payload).encode(),
     headers={"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
-    method="POST"
+    method=method
 )
 try:
     resp = urllib.request.urlopen(req, timeout=10)

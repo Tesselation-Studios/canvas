@@ -40,6 +40,7 @@ curl -sk -X POST "$CANVAS_URL/push" \
 Default is "main". Use `--board <name>` for separate boards. Boards are created on first push.
 
 ## Rules
+- **Spec is the source of truth** — SPEC.md defines what Canvas IS. Code matches spec, not the other way around. To change behavior: update SPEC.md first, get approval, THEN write code.
 - **Never commit the token** — it lives in `.env` (gitignored)
 - **Use `--card-id` to iterate** — update an existing card instead of flooding the board
 - **Boards are for themes** — use `--board research`, `--board coding`, etc. for organization
