@@ -1,7 +1,7 @@
 # Canvas — Real-time Agent Display Board Specification
 
-> **Status:** Revision 3 — Deployed state
-> **Author:** Orchestrator (subagent) / Coder (subagent)
+> **Status:** Revision 5 — Deployed state
+> **Author:** Casper + Coder + Orchestrator
 > **Date:** 2026-06-29
 > **Iteration:** 3
 > **Spec driven from:** What's actually running on OpenClaw VM (192.168.1.73)
