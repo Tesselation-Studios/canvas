@@ -281,6 +281,47 @@ services:
 
 ---
 
+---
+
+## Agent Push Tools
+
+Three ways for agents to push content to Canvas:
+
+### `canvas-push` (CLI — zero deps)
+
+```bash
+# Quick push
+canvas-push --board main '# Hello from agent!'
+
+# With full identity and type
+canvas-push --type code --title fib.py --agent casper --emoji 🐱 'def fib(n):...'
+
+# Pipe content
+echo '# Hello' | canvas-push --board research
+```
+
+The script auto-sources `CANVAS_TOKEN` from `.env` in the project directory. Located at `/home/openclaw/projects/canvas/canvas-push`.
+
+### MCP Server (Python + mcp SDK)
+
+```bash
+python3 /home/openclaw/projects/canvas/mcp_server.py   # stdio (default)
+python3 /home/openclaw/projects/canvas/mcp_server.py --transport sse --port 8000  # HTTP/SSE
+```
+
+Exposes `push_to_canvas(board, type, content, title, agent, agent_emoji, stream_only)` as an MCP tool. Compatible with any MCP client (Claude Desktop, VS Code, auto-mcp).
+
+### curl (raw)
+
+```bash
+curl -sk -X POST "${CANVAS_URL}/push" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${CANVAS_TOKEN}" \
+  -d '{"type":"markdown","content":"# Hello","board":"main","agent":"casper","agent_emoji":"🐱"}'
+```
+
+See `SPEC.md` §5.5 for full details.
+
 ## Built by
 
 **Casper** 🐱 with **Raf** 👨‍💻

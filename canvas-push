@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""canvas-push — Push content to the Canvas display board.
+Usage: canvas-push [--board main] [--type markdown] [--title "Hello"] [--agent casper] [--emoji 👻] [CONTENT]
+       echo "content" | canvas-push --board research --type code
+"""
+import argparse, json, os, sys, urllib.request
+
+ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(ENV_FILE):
+    for line in open(ENV_FILE):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k, v)
+
+URL = os.environ.get("CANVAS_URL", "http://192.168.1.73:5001")
+TOKEN = os.environ.get("CANVAS_TOKEN", "")
+if not TOKEN:
+    print("ERROR: CANVAS_TOKEN not found in environment or .env", file=sys.stderr)
+    sys.exit(1)
+
+p = argparse.ArgumentParser(description="Push content to Canvas board")
+p.add_argument("--board", "-b", default="main")
+p.add_argument("--type", "-t", default="markdown", choices=["markdown","code","mermaid","svg","html","image","video","clear"])
+p.add_argument("--card-id", "-c", default="", help="UUID of existing card to update instead of creating a new one")
+p.add_argument("--title", "-T", default="")
+p.add_argument("--agent", "-a", default=os.environ.get("USER", "unknown"))
+p.add_argument("--emoji", "-e", default="🤖")
+p.add_argument("--stream-only", "-s", action="store_true")
+p.add_argument("content", nargs="*", help="Content to push (or pipe via stdin)")
+args = p.parse_args()
+
+content = " ".join(args.content) if args.content else None
+if not content:
+    if not sys.stdin.isatty():
+        content = sys.stdin.read()
+    else:
+        print("ERROR: No content provided. Pipe it or pass as argument.", file=sys.stderr)
+        sys.exit(1)
+
+payload = {
+    "type": args.type, "content": content, "board": args.board,
+    "title": args.title, "agent": args.agent, "agent_emoji": args.emoji
+}
+if args.card_id:
+    payload["card_id"] = args.card_id
+if args.stream_only:
+    payload["stream_only"] = True
+
+print(f"Pushing to {args.board} board ({args.type})...", file=sys.stderr)
+print(f"  Agent: {args.agent} {args.emoji}", file=sys.stderr)
+if args.title:
+    print(f"  Title: {args.title}", file=sys.stderr)
+
+req = urllib.request.Request(
+    f"{URL}/push",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
+    method="POST"
+)
+try:
+    resp = urllib.request.urlopen(req, timeout=10)
+    result = json.loads(resp.read())
+    print(json.dumps(result, indent=2))
+    print(f"\nOpen: {URL}/?board={args.board}", file=sys.stderr)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)

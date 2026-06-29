@@ -2,17 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>canvas · {{ board_id }}</title>
 
 <!-- CDN dependencies -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.6/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/atom-one-dark.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.6/marked.min.js?v=2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js?v=2"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/atom-one-dark.min.css?v=2">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css?v=2">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js?v=2"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js?v=2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js?v=2"></script>
+<script src="https://cdn.jsdelivr.net/npm/fabric@5.3.0/dist/fabric.min.js?v=2"></script>
 
 <style>
   :root {
@@ -32,6 +35,10 @@
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
+  html {
+    height: 100%;
+    overflow-x: hidden;
+  }
   body {
     background: var(--bg);
     color: var(--text);
@@ -39,6 +46,11 @@
     font-size: 14px;
     line-height: 1.6;
     min-height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior-y: contain;
+    touch-action: manipulation;
+    -webkit-overflow-scrolling: touch;
   }
 
   #header {
@@ -380,6 +392,210 @@
     color: var(--red);
   }
 
+  /* ─── Permalink ────────────────────────────────────────────────────── */
+  .permalink-btn {
+    cursor: pointer;
+    opacity: 0.3;
+    font-size: 11px;
+    transition: opacity 0.2s;
+    margin-left: auto;
+    padding: 2px 4px;
+    border-radius: 4px;
+    user-select: none;
+  }
+  .permalink-btn:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.06);
+  }
+
+  /* ─── Toast ────────────────────────────────────────────────────────── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a2a1e;
+    border: 1px solid var(--green);
+    color: var(--green);
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-family: var(--font);
+    font-size: 13px;
+    z-index: 9999;
+    opacity: 0;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ─── Mode Toggle ─────────────────────────────────────────────────── */
+  #mode-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    transition: all 0.2s;
+  }
+  #mode-toggle:hover {
+    border-color: var(--purple);
+    color: var(--purple);
+  }
+  #mode-toggle.active {
+    border-color: var(--purple);
+    color: var(--purple);
+    background: rgba(188,140,255,0.08);
+  }
+
+  /* ─── Whiteboard Mode ─────────────────────────────────────────────── */
+  #whiteboard-mode {
+    display: none;
+    position: fixed;
+    top: 48px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    background: var(--bg);
+  }
+  #whiteboard-mode.active {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #wb-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: #1a1a2e;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  #wb-toolbar .wb-tool {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    width: 32px;
+    height: 28px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 14px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #wb-toolbar .wb-tool:hover {
+    border-color: var(--border);
+    color: var(--text);
+    background: var(--bg-hover);
+  }
+  #wb-toolbar .wb-tool.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(88,166,255,0.1);
+  }
+
+  .wb-sep {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    display: inline-block;
+  }
+
+  #wb-toolbar label {
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  #wb-toolbar input[type="color"] {
+    width: 26px;
+    height: 22px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    padding: 0;
+  }
+  #wb-toolbar input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+  }
+  #wb-toolbar input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+  }
+  #wb-toolbar input[type="range"] {
+    width: 60px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  #wb-toolbar input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  #wb-undo, #wb-clear {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 2px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  #wb-undo:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  #wb-clear:hover {
+    border-color: var(--red);
+    color: var(--red);
+  }
+
+  #wb-canvas-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    cursor: default;
+  }
+  #wb-canvas-container.panning {
+    cursor: grab;
+  }
+  #wb-canvas-container.panning:active {
+    cursor: grabbing;
+  }
+
+  /* Hide feed in whiteboard mode via display:none on #whiteboard-mode.active + sibling #content */
+  body.wb-mode #content {
+    display: none;
+  }
+
   /* Connection debug */
   #debug-info {
     display: none;
@@ -395,6 +611,7 @@
   <span class="status">
     <span class="status-dot" id="status-dot"></span>
     <span id="status-text">connecting</span>
+    <button id="mode-toggle" title="Toggle between feed and whiteboard mode">✏️ Whiteboard</button>
     <button id="clear-btn" title="Clear this board">× clear</button>
   </span>
 </div>
@@ -406,6 +623,32 @@
     <p>Push content with <code>POST /push</code></p>
   </div>
 </div>
+
+<!-- Whiteboard Mode -->
+<div id="whiteboard-mode">
+  <div id="wb-toolbar">
+    <button data-tool="select"    class="wb-tool active" title="Select / Pan">⬚</button>
+    <button data-tool="pencil"    class="wb-tool" title="Freehand draw">✏️</button>
+    <button data-tool="rect"      class="wb-tool" title="Rectangle">▭</button>
+    <button data-tool="circle"    class="wb-tool" title="Circle">○</button>
+    <button data-tool="line"      class="wb-tool" title="Line">╱</button>
+    <button data-tool="text"      class="wb-tool" title="Text">T</button>
+    <button data-tool="erase"     class="wb-tool" title="Erase">🧹</button>
+    <span class="wb-sep"></span>
+    <label>Stroke <input type="color" id="wb-stroke" value="#58a6ff"></label>
+    <label>Fill <input type="color" id="wb-fill" value="#0d1117"></label>
+    <label>Size <input type="range" id="wb-size" min="1" max="20" value="3"></label>
+    <span class="wb-sep"></span>
+    <button id="wb-undo" title="Undo last action">↩ Undo</button>
+    <button id="wb-clear" title="Clear canvas">🗑 Clear</button>
+  </div>
+  <div id="wb-canvas-container">
+    <canvas id="wb-canvas"></canvas>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div id="toast"></div>
 
 <script>
 // ─── Configuration ────────────────────────────────────────────────────────
@@ -420,9 +663,13 @@ let emptyState = document.getElementById('empty-state');
 let statusDot = document.getElementById('status-dot');
 let statusText = document.getElementById('status-text');
 let clearBtn = document.getElementById('clear-btn');
+let modeToggle = document.getElementById('mode-toggle');
+let whiteboardMode = document.getElementById('whiteboard-mode');
+let toastEl = document.getElementById('toast');
 
 // ─── Mermaid init ─────────────────────────────────────────────────────────
-mermaid.initialize({
+if (typeof mermaid !== 'undefined') {
+  mermaid.initialize({
   startOnLoad: false,
   theme: 'dark',
   securityLevel: 'loose',
@@ -443,7 +690,22 @@ mermaid.initialize({
     mainBkg: '#161b22',
     nodeBorder: '#30363d',
   }
-});
+  });
+} else {
+  console.warn('mermaid.js not loaded — diagram rendering disabled');
+}
+
+// ─── Toast ────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, duration) {
+  duration = duration || 1800;
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove('show');
+  }, duration);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -461,6 +723,7 @@ function escapeHtml(str) {
 function createCard(item) {
   const card = document.createElement('div');
   card.className = `card content-${item.type}`;
+  card.id = 'card-' + item.id;
 
   // Meta row
   const meta = document.createElement('div');
@@ -484,6 +747,29 @@ function createCard(item) {
   time.textContent = formatTime(item.timestamp);
   meta.appendChild(time);
 
+  // Permalink button
+  const permalink = document.createElement('span');
+  permalink.className = 'permalink-btn';
+  permalink.textContent = '🔗';
+  permalink.title = 'Copy permalink';
+  permalink.addEventListener('click', function(e) {
+    e.stopPropagation();
+    const url = 'https://canvas.wodinga.studio/#card-' + item.id;
+    navigator.clipboard.writeText(url).then(() => {
+      showToast('Copied!');
+    }).catch(() => {
+      // Fallback for older browsers
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast('Copied!');
+    });
+  });
+  meta.appendChild(permalink);
+
   card.appendChild(meta);
 
   // Content area
@@ -492,9 +778,14 @@ function createCard(item) {
 
   switch (item.type) {
     case 'markdown':
-      body.innerHTML = marked.parse(item.content);
+      if (typeof marked !== 'undefined') {
+        body.innerHTML = marked.parse(item.content);
+      } else {
+        body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
+        console.warn('marked.js not loaded — markdown rendering degraded to plain text');
+      }
       // Render KaTeX
-      if (window.renderMathInElement) {
+      if (typeof renderMathInElement !== 'undefined') {
         renderMathInElement(body, {
           delimiters: [
             {left: '$$', right: '$$', display: true},
@@ -506,9 +797,11 @@ function createCard(item) {
         });
       }
       // Highlight code blocks
-      body.querySelectorAll('pre code').forEach(block => {
-        hljs.highlightElement(block);
-      });
+      if (typeof hljs !== 'undefined') {
+        body.querySelectorAll('pre code').forEach(block => {
+          hljs.highlightElement(block);
+        });
+      }
       break;
 
     case 'html':
@@ -517,9 +810,11 @@ function createCard(item) {
 
     case 'code':
       body.innerHTML = `<pre><code>${escapeHtml(item.content)}</code></pre>`;
-      body.querySelectorAll('pre code').forEach(block => {
-        hljs.highlightElement(block);
-      });
+      if (typeof hljs !== 'undefined') {
+        body.querySelectorAll('pre code').forEach(block => {
+          hljs.highlightElement(block);
+        });
+      }
       break;
 
     case 'image':
@@ -541,11 +836,18 @@ function createCard(item) {
     case 'mermaid':
       const mermaidId = 'mermaid-' + item.id;
       body.innerHTML = `<pre class="mermaid" id="${mermaidId}">${escapeHtml(item.content)}</pre>`;
-      // Render mermaid
-      try {
-        mermaid.run({ nodes: [document.getElementById(mermaidId)] });
-      } catch(e) {
-        console.warn('Mermaid render error:', e);
+      // Render mermaid — use body.querySelector because element isn't in DOM yet
+      if (typeof mermaid !== 'undefined') {
+        try {
+          const mermaidEl = body.querySelector('#' + mermaidId);
+          if (mermaidEl) {
+            mermaid.run({ nodes: [mermaidEl] });
+          }
+        } catch(e) {
+          console.warn('Mermaid render error:', e);
+          body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
+        }
+      } else {
         body.innerHTML = `<pre>${escapeHtml(item.content)}</pre>`;
       }
       break;
@@ -645,15 +947,21 @@ function createCard(item) {
           isPanning = true;
           panStart = {x: e.clientX - panOffset.x, y: e.clientY - panOffset.y};
           svgEl.style.cursor = 'grabbing';
+          e.preventDefault();
         }
       });
-      window.addEventListener('mousemove', e => {
+      svgEl.addEventListener('mousemove', e => {
         if (!isPanning) return;
         panOffset = {x: e.clientX - panStart.x, y: e.clientY - panStart.y};
         const g = svgEl.querySelector('.draw-canvas');
         g.setAttribute('transform', `translate(${panOffset.x},${panOffset.y}) scale(${currentScale})`);
+        e.preventDefault();
       });
-      window.addEventListener('mouseup', () => {
+      svgEl.addEventListener('mouseup', () => {
+        isPanning = false;
+        svgEl.style.cursor = '';
+      });
+      svgEl.addEventListener('mouseleave', () => {
         isPanning = false;
         svgEl.style.cursor = '';
       });
@@ -691,7 +999,7 @@ function createCard(item) {
   return card;
 }
 
-function addCard(item) {
+function addCard(item, isHistory) {
   // Remove empty state
   emptyState.style.display = 'none';
 
@@ -700,15 +1008,36 @@ function addCard(item) {
     const cards = contentEl.querySelectorAll('.card');
     cards.forEach(c => c.remove());
     const card = createCard(item);
-    contentEl.appendChild(card);
+    contentEl.insertBefore(card, contentEl.firstChild);
     return;
   }
 
-  const card = createCard(item);
-  contentEl.appendChild(card);
+  // ── Update existing card if this is an explicit update ────────────
+  if (item.action === 'update') {
+    const existing = document.getElementById('card-' + item.id);
+    if (existing) {
+      console.log('Updating card:', item.id);
+      const newCard = createCard(item);
+      existing.parentNode.replaceChild(newCard, existing);
 
-  // Auto-scroll
-  card.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      // If this card is in the URL hash, re-scroll to it
+      if (window.location.hash === '#card-' + item.id) {
+        setTimeout(() => {
+          newCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
+      }
+      return;
+    }
+  }
+
+  // ── Create new card ────────────────────────────────────────────────
+  const card = createCard(item);
+  contentEl.insertBefore(card, contentEl.firstChild);
+
+  // Update hash to point to this new card (SSE live only, not history)
+  if (!isHistory && item.id && item.id !== 'clear') {
+    window.location.hash = 'card-' + item.id;
+  }
 }
 
 function setConnected(connected) {
@@ -729,7 +1058,7 @@ function connectSSE() {
     if (!event.data || event.data.trim() === '') return;
     try {
       const item = JSON.parse(event.data);
-      addCard(item);
+      handleSSEMessage(item);
     } catch (e) {
       console.warn('Failed to parse SSE data:', e);
     }
@@ -743,6 +1072,17 @@ function connectSSE() {
   };
 }
 
+// Route SSE messages to the right handler based on current mode
+function handleSSEMessage(item) {
+  if (isWhiteboardActive && item.type === 'draw') {
+    // In whiteboard mode: render draw events on the Fabric canvas
+    addShapesToWhiteboard(item.content.shapes);
+  } else {
+    // Feed mode or non-draw events in whiteboard mode: show as cards
+    addCard(item);
+  }
+}
+
 // ─── Load History ─────────────────────────────────────────────────────────
 
 async function loadHistory() {
@@ -751,9 +1091,26 @@ async function loadHistory() {
     const items = await response.json();
     if (items.length === 0) return;
     emptyState.style.display = 'none';
-    items.forEach(item => addCard(item));
-    // Scroll to bottom
-    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    items.reverse().forEach(item => addCard(item, true));
+    // Position at top (newest first)
+    window.scrollTo({ top: 0, behavior: 'instant' });
+
+    // If hash points to a card, scroll to it after rendering
+    if (window.location.hash && window.location.hash.startsWith('#card-')) {
+      const targetId = window.location.hash.substring(1);
+      // Retry a few times in case DOM hasn't rendered yet
+      let attempts = 0;
+      const tryScroll = () => {
+        const target = document.getElementById(targetId);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else if (attempts < 5) {
+          attempts++;
+          setTimeout(tryScroll, 200);
+        }
+      };
+      setTimeout(tryScroll, 200);
+    }
   } catch (e) {
     console.warn('Failed to load history:', e);
   }
@@ -773,10 +1130,519 @@ clearBtn.addEventListener('click', async () => {
   }
 });
 
-// ─── Init ─────────────────────────────────────────────────────────────────
+// ─── Whiteboard Mode ─────────────────────────────────────────────────────
+
+let isWhiteboardActive = false;
+let wbCanvas = null;             // Fabric.Canvas instance
+let wbHistory = [];              // JSON snapshots for undo
+let wbHistoryIndex = -1;
+let currentTool = 'select';
+let isPanning = false;
+let panStartPoint = null;
+
+const TOOL_NAMES = ['select', 'pencil', 'rect', 'circle', 'line', 'text', 'erase'];
+
+function initWhiteboard() {
+  if (typeof fabric === 'undefined') {
+    console.warn('fabric.js not loaded — whiteboard mode unavailable');
+    showToast('Whiteboard unavailable — fabric.js not loaded', 3000);
+    return;
+  }
+
+  const container = document.getElementById('wb-canvas-container');
+  const canvasEl = document.getElementById('wb-canvas');
+
+  const rect = container.getBoundingClientRect();
+  canvasEl.width = rect.width;
+  canvasEl.height = rect.height;
+
+  wbCanvas = new fabric.Canvas('wb-canvas', {
+    width: rect.width,
+    height: rect.height,
+    backgroundColor: '#0d1117',
+    isDrawingMode: false,
+    selection: true,
+    preserveObjectStacking: true,
+    renderOnAddRemove: true,
+    stopContextMenu: true,
+    fireRightClick: false,
+  });
+
+  // ─── Pan/Zoom ──────────────────────────────────────────────────────
+  wbCanvas.on('mouse:wheel', function(opt) {
+    const delta = opt.e.deltaY;
+    let zoom = wbCanvas.getZoom();
+    zoom *= 0.999 ** delta;
+    zoom = Math.max(0.2, Math.min(10, zoom));
+    wbCanvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+    opt.e.preventDefault();
+    opt.e.stopPropagation();
+  });
+
+  wbCanvas.on('mouse:down', function(opt) {
+    const evt = opt.e;
+    if (evt.altKey || evt.button === 1 || currentTool === 'select') {
+      // Check if clicking empty space — initiate pan
+      if (!opt.target) {
+        isPanning = true;
+        panStartPoint = { x: evt.clientX, y: evt.clientY };
+        container.classList.add('panning');
+        wbCanvas.selection = false;
+      }
+    }
+  });
+
+  wbCanvas.on('mouse:move', function(opt) {
+    if (isPanning && panStartPoint) {
+      const evt = opt.e;
+      const vpt = wbCanvas.viewportTransform;
+      vpt[4] += evt.clientX - panStartPoint.x;
+      vpt[5] += evt.clientY - panStartPoint.y;
+      panStartPoint = { x: evt.clientX, y: evt.clientY };
+      wbCanvas.requestRenderAll();
+    }
+  });
+
+  wbCanvas.on('mouse:up', function() {
+    if (isPanning) {
+      isPanning = false;
+      panStartPoint = null;
+      container.classList.remove('panning');
+      wbCanvas.selection = true;
+    }
+  });
+
+  // ─── Drawing event handlers ────────────────────────────────────────
+  // Pencil (freehand) mode
+  wbCanvas.on('path:created', function() {
+    saveUndoState();
+  });
+
+  // Rectangle: mouse:down creates start; mouse:up creates rect
+  let drawStart = null;
+  let drawShape = null;
+
+  wbCanvas.on('mouse:down', function(opt) {
+    if (['rect', 'circle', 'line'].includes(currentTool) && !opt.target && !isPanning) {
+      const pointer = wbCanvas.getPointer(opt.e);
+      drawStart = pointer;
+      const strokeColor = document.getElementById('wb-stroke').value;
+      const fillColor = document.getElementById('wb-fill').value;
+      const strokeWidth = parseInt(document.getElementById('wb-size').value);
+
+      switch (currentTool) {
+        case 'rect':
+          drawShape = new fabric.Rect({
+            left: pointer.x, top: pointer.y,
+            width: 0, height: 0,
+            fill: fillColor,
+            stroke: strokeColor,
+            strokeWidth: strokeWidth,
+            rx: 0, ry: 0,
+            transparentCorners: false,
+            cornerColor: '#58a6ff',
+            cornerStyle: 'circle',
+          });
+          break;
+        case 'circle':
+          drawShape = new fabric.Ellipse({
+            left: pointer.x, top: pointer.y,
+            rx: 0, ry: 0,
+            fill: fillColor,
+            stroke: strokeColor,
+            strokeWidth: strokeWidth,
+            transparentCorners: false,
+            cornerColor: '#58a6ff',
+            cornerStyle: 'circle',
+          });
+          break;
+        case 'line':
+          drawShape = new fabric.Line(
+            [pointer.x, pointer.y, pointer.x, pointer.y],
+            {
+              stroke: strokeColor,
+              strokeWidth: strokeWidth,
+              transparentCorners: false,
+              cornerColor: '#58a6ff',
+              cornerStyle: 'circle',
+            }
+          );
+          break;
+      }
+      if (drawShape) {
+        wbCanvas.add(drawShape);
+        wbCanvas.renderAll();
+      }
+    }
+  });
+
+  wbCanvas.on('mouse:move', function(opt) {
+    if (drawShape && drawStart && ['rect', 'circle', 'line'].includes(currentTool)) {
+      const pointer = wbCanvas.getPointer(opt.e);
+      switch (currentTool) {
+        case 'rect':
+          const rx = Math.min(pointer.x, drawStart.x);
+          const ry = Math.min(pointer.y, drawStart.y);
+          drawShape.set({
+            left: rx, top: ry,
+            width: Math.abs(pointer.x - drawStart.x),
+            height: Math.abs(pointer.y - drawStart.y),
+          });
+          break;
+        case 'circle':
+          drawShape.set({
+            rx: Math.abs(pointer.x - drawStart.x) / 2,
+            ry: Math.abs(pointer.y - drawStart.y) / 2,
+            left: (pointer.x + drawStart.x) / 2 - Math.abs(pointer.x - drawStart.x) / 2,
+            top: (pointer.y + drawStart.y) / 2 - Math.abs(pointer.y - drawStart.y) / 2,
+          });
+          break;
+        case 'line':
+          drawShape.set({ x2: pointer.x, y2: pointer.y });
+          break;
+      }
+      wbCanvas.renderAll();
+    }
+  });
+
+  wbCanvas.on('mouse:up', function(opt) {
+    if (drawShape && drawStart && ['rect', 'circle', 'line'].includes(currentTool)) {
+      // Remove zero-size shapes
+      if (currentTool === 'rect' && (drawShape.width < 3 && drawShape.height < 3)) {
+        wbCanvas.remove(drawShape);
+      } else if (currentTool === 'circle' && (drawShape.rx < 3 && drawShape.ry < 3)) {
+        wbCanvas.remove(drawShape);
+      } else if (currentTool === 'line' && Math.abs(drawShape.x1 - drawShape.x2) < 3 && Math.abs(drawShape.y1 - drawShape.y2) < 3) {
+        wbCanvas.remove(drawShape);
+      } else {
+        saveUndoState();
+      }
+      drawShape = null;
+      drawStart = null;
+      wbCanvas.renderAll();
+    }
+  });
+
+  // ─── Text tool ────────────────────────────────────────────────────
+  wbCanvas.on('mouse:dblclick', function(opt) {
+    if (currentTool !== 'text') return;
+    const pointer = wbCanvas.getPointer(opt.e);
+    const strokeColor = document.getElementById('wb-stroke').value;
+    const fontSize = parseInt(document.getElementById('wb-size').value) * 5 + 8; // scale size slider to font
+
+    const textbox = new fabric.IText('Type here', {
+      left: pointer.x,
+      top: pointer.y,
+      fontFamily: '"JetBrains Mono", "Fira Code", "Consolas", monospace',
+      fontSize: Math.max(12, fontSize),
+      fill: strokeColor,
+      backgroundColor: 'transparent',
+      editable: true,
+      transparentCorners: false,
+      cornerColor: '#58a6ff',
+      cornerStyle: 'circle',
+    });
+    wbCanvas.add(textbox);
+    wbCanvas.setActiveObject(textbox);
+    textbox.enterEditing();
+    saveUndoState();
+  });
+
+  // ─── Erase tool ───────────────────────────────────────────────────
+  wbCanvas.on('mouse:down', function(opt) {
+    if (currentTool === 'erase' && opt.target) {
+      wbCanvas.remove(opt.target);
+      wbCanvas.discardActiveObject().renderAll();
+      saveUndoState();
+    }
+  });
+
+  // ─── Undo: save state on object modification ──────────────────────
+  wbCanvas.on('object:modified', function() {
+    saveUndoState();
+  });
+
+  // ─── Resize handler ───────────────────────────────────────────────
+  function resizeCanvas() {
+    const r = container.getBoundingClientRect();
+    wbCanvas.setWidth(r.width);
+    wbCanvas.setHeight(r.height);
+    wbCanvas.renderAll();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  // Save initial blank state
+  saveUndoState();
+}
+
+function saveUndoState() {
+  if (!wbCanvas) return;
+  const json = JSON.stringify(wbCanvas.toJSON());
+  // Remove future states if we undid and are now redoing
+  if (wbHistoryIndex < wbHistory.length - 1) {
+    wbHistory = wbHistory.slice(0, wbHistoryIndex + 1);
+  }
+  wbHistory.push(json);
+  // Keep max 20
+  if (wbHistory.length > 20) {
+    wbHistory.shift();
+  }
+  wbHistoryIndex = wbHistory.length - 1;
+}
+
+function undoWhiteboard() {
+  if (!wbCanvas || wbHistoryIndex <= 0) return;
+  wbHistoryIndex--;
+  const json = wbHistory[wbHistoryIndex];
+  wbCanvas.loadFromJSON(JSON.parse(json), () => {
+    wbCanvas.renderAll();
+  });
+}
+
+function clearWhiteboard() {
+  if (!wbCanvas) return;
+  wbCanvas.clear();
+  wbCanvas.backgroundColor = '#0d1117';
+  wbCanvas.renderAll();
+  wbHistory = [];
+  wbHistoryIndex = -1;
+  saveUndoState();
+}
+
+function setActiveTool(tool) {
+  currentTool = tool;
+  // Update toolbar button styles
+  document.querySelectorAll('.wb-tool').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tool === tool);
+  });
+
+  if (!wbCanvas) return;
+
+  // Reset drawing mode flags
+  drawShape = null;
+  drawStart = null;
+
+  // Configure Fabric canvas
+  if (tool === 'select') {
+    wbCanvas.isDrawingMode = false;
+    wbCanvas.selection = true;
+    wbCanvas.defaultCursor = 'default';
+  } else if (tool === 'pencil') {
+    wbCanvas.isDrawingMode = true;
+    wbCanvas.selection = false;
+    const strokeColor = document.getElementById('wb-stroke').value;
+    const strokeWidth = parseInt(document.getElementById('wb-size').value);
+    wbCanvas.freeDrawingBrush.color = strokeColor;
+    wbCanvas.freeDrawingBrush.width = strokeWidth;
+  } else if (tool === 'erase') {
+    wbCanvas.isDrawingMode = false;
+    wbCanvas.selection = false;
+    wbCanvas.defaultCursor = 'pointer';
+  } else {
+    // rect, circle, line, text — use custom mouse handlers
+    wbCanvas.isDrawingMode = false;
+    wbCanvas.selection = false;
+    wbCanvas.defaultCursor = 'crosshair';
+  }
+}
+
+function setWhiteboardMode(active) {
+  isWhiteboardActive = active;
+  whiteboardMode.classList.toggle('active', active);
+  document.body.classList.toggle('wb-mode', active);
+  modeToggle.classList.toggle('active', active);
+  modeToggle.textContent = active ? '📋 Feed' : '✏️ Whiteboard';
+
+  if (!wbCanvas && active && typeof fabric === 'undefined') {
+    showToast('Whiteboard unavailable — fabric.js not loaded', 3000);
+    return;
+  }
+
+  if (active && !wbCanvas) {
+    // First init
+    initWhiteboard();
+    // Update drawing brush from current UI state
+    setActiveTool(currentTool);
+    // Load any existing draw cards from the feed onto the canvas
+    loadDrawCardsToWhiteboard();
+  }
+
+  if (active && wbCanvas) {
+    // Resize to current container
+    const container = document.getElementById('wb-canvas-container');
+    const rect = container.getBoundingClientRect();
+    wbCanvas.setWidth(rect.width);
+    wbCanvas.setHeight(rect.height);
+    wbCanvas.renderAll();
+  }
+
+  // Load existing draw cards
+  if (active && wbCanvas) {
+    loadDrawCardsToWhiteboard();
+  }
+
+  // Update URL without reload
+  const url = new URL(window.location);
+  if (active) {
+    url.searchParams.set('mode', 'whiteboard');
+  } else {
+    url.searchParams.delete('mode');
+  }
+  window.history.replaceState({}, '', url);
+}
+
+function loadDrawCardsToWhiteboard() {
+  if (!wbCanvas) return;
+  const drawCards = contentEl.querySelectorAll('.card.content-draw');
+  drawCards.forEach(card => {
+    // We already rendered these as SVG. For Fabric, we need the JSON shapes.
+    // This is a best-effort: draw cards we created from push events will have
+    // been processed by handleSSEMessage -> addShapesToWhiteboard already.
+    // Here we just skip re-processing since addShapesToWhiteboard is called
+    // on history load. Cards already exist as cards.
+  });
+}
+
+function addShapesToWhiteboard(shapes) {
+  if (typeof fabric === 'undefined') return;
+  if (!shapes || !wbCanvas) return;
+  if (!isWhiteboardActive) {
+    // Queue for when whiteboard activates
+    return;
+  }
+
+  shapes.forEach(s => {
+    let obj = null;
+    switch (s.type) {
+      case 'rect':
+        obj = new fabric.Rect({
+          left: s.x, top: s.y,
+          width: s.w, height: s.h,
+          fill: s.fill || '#0d1117',
+          stroke: s.stroke || '#58a6ff',
+          strokeWidth: s['stroke-width'] || 2,
+          rx: s.rx || 0, ry: s.ry || 0,
+        });
+        break;
+      case 'circle':
+        obj = new fabric.Ellipse({
+          left: s.cx - s.r, top: s.cy - s.r,
+          rx: s.r, ry: s.r,
+          fill: s.fill || '#0d1117',
+          stroke: s.stroke || '#58a6ff',
+          strokeWidth: s['stroke-width'] || 2,
+        });
+        break;
+      case 'line':
+        obj = new fabric.Line([s.x1, s.y1, s.x2, s.y2], {
+          stroke: s.stroke || '#58a6ff',
+          strokeWidth: s['stroke-width'] || 2,
+        });
+        break;
+      case 'arrow':
+        obj = new fabric.Line([s.x1, s.y1, s.x2, s.y2], {
+          stroke: s.stroke || '#58a6ff',
+          strokeWidth: s['stroke-width'] || 2,
+        });
+        // Add arrowhead triangle
+        const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+        const angle = Math.atan2(dy, dx);
+        const hl = Math.min(12, Math.hypot(dx, dy) * 0.3);
+        const ha = Math.PI / 6;
+        const ax = s.x2 - hl * Math.cos(angle - ha);
+        const ay = s.y2 - hl * Math.sin(angle - ha);
+        const bx = s.x2 - hl * Math.cos(angle + ha);
+        const by = s.y2 - hl * Math.sin(angle + ha);
+        const head = new fabric.Polygon([
+          {x: s.x2, y: s.y2},
+          {x: ax, y: ay},
+          {x: bx, y: by},
+        ], {
+          fill: s.stroke || '#58a6ff',
+          strokeWidth: 0,
+        });
+        wbCanvas.add(head);
+        break;
+      case 'text':
+        obj = new fabric.IText(s.text || '', {
+          left: s.x, top: s.y,
+          fontFamily: '"JetBrains Mono", "Fira Code", "Consolas", monospace',
+          fontSize: s.size || 14,
+          fill: s.color || '#e6edf3',
+        });
+        break;
+    }
+    if (obj) {
+      wbCanvas.add(obj);
+    }
+  });
+  wbCanvas.renderAll();
+  saveUndoState();
+}
+
+// ─── Whiteboard Toolbar Events ─────────────────────────────────────────
+
+// Tool selection
+document.querySelectorAll('.wb-tool').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setActiveTool(btn.dataset.tool);
+  });
+});
+
+// Color / size changes
+document.getElementById('wb-stroke').addEventListener('input', function() {
+  if (wbCanvas && wbCanvas.isDrawingMode) {
+    wbCanvas.freeDrawingBrush.color = this.value;
+  }
+});
+document.getElementById('wb-size').addEventListener('input', function() {
+  if (wbCanvas && wbCanvas.isDrawingMode) {
+    wbCanvas.freeDrawingBrush.width = parseInt(this.value);
+  }
+});
+
+document.getElementById('wb-undo').addEventListener('click', undoWhiteboard);
+document.getElementById('wb-clear').addEventListener('click', clearWhiteboard);
+
+// ─── Mode Toggle ──────────────────────────────────────────────────────
+
+modeToggle.addEventListener('click', () => {
+  setWhiteboardMode(!isWhiteboardActive);
+});
+
+// ─── Init based on URL parameter ──────────────────────────────────────
+
+function initFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('mode') === 'whiteboard') {
+    setWhiteboardMode(true);
+  }
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────
+
+// Listen for hash changes (e.g. manually navigating to #card-xxx)
+window.addEventListener('hashchange', function() {
+  const hash = window.location.hash;
+  if (hash.startsWith('#card-')) {
+    const targetId = hash.substring(1);
+    let attempts = 0;
+    const tryScroll = () => {
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else if (attempts < 5) {
+        attempts++;
+        setTimeout(tryScroll, 200);
+      }
+    };
+    setTimeout(tryScroll, 100);
+  }
+});
 
 loadHistory().then(() => {
   connectSSE();
+  initFromURL();
 });
 </script>
 

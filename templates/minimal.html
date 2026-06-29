@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>canvas · {{ board_id }} · minimal</title>
+<style>
+  body { background:#0d1117; color:#e6edf3; font-family:monospace; margin:20px auto; max-width:800px; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin:12px 0; }
+  .meta { font-size:11px; color:#8b949e; margin-bottom:8px; }
+  .badge { background:#1a3a2a; color:#3fb950; padding:2px 8px; border-radius:4px; font-weight:600; }
+  .agent { margin-left:8px; background:rgba(255,255,255,0.04); border-radius:12px; padding:2px 10px; }
+  h3 { color:#58a6ff; margin:0 0 8px; }
+  pre { background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:12px; overflow-x:auto; white-space:pre-wrap; }
+  .status { position:fixed; top:10px; right:20px; font-size:12px; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; }
+  .dot.live { background:#3fb950; }
+  .dot.dead { background:#f85149; }
+  #empty { text-align:center; padding:80px 20px; color:#8b949e; }
+</style>
+</head>
+<body>
+<div class="status">
+  <span class="dot" id="dot"></span>
+  <span id="sse-status">connecting</span>
+</div>
+
+<h2>canvas / {{ board_id }}</h2>
+<div id="content">
+  <div id="empty">🖼️<br>Loading history…</div>
+</div>
+
+<script>
+const BOARD_ID = {{ board_id | tojson }};
+const HISTORY_URL = `/history/${BOARD_ID}`;
+const STREAM_URL = `/stream/${BOARD_ID}`;
+const el = document.getElementById('content');
+const empty = document.getElementById('empty');
+const dot = document.getElementById('dot');
+const statusEl = document.getElementById('sse-status');
+
+function addCard(item) {
+  empty.style.display = 'none';
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  let body = '';
+  switch(item.type) {
+    case 'markdown':
+      body = item.content.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>').replace(/^# (.*)/gm, '<h1>$1</h1>').replace(/^## (.*)/gm, '<h2>$1</h2>').replace(/^### (.*)/gm, '<h3>$1</h3>').replace(/^- (.*)/gm, '· $1').replace(/`([^`]+)`/g, '<code>$1</code>');
+      break;
+    case 'code':
+      body = `<pre><code>${item.content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
+      break;
+    case 'mermaid':
+      body = `<pre>${item.content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre><p style="color:#d29922">(mermaid diagram — CDN-free mode)</p>`;
+      break;
+    case 'clear':
+      el.innerHTML = '';
+      el.appendChild(empty);
+      return;
+    default:
+      body = `<pre>${item.content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`;
+  }
+
+  card.innerHTML = `
+    <div class="meta">
+      <span class="badge">${item.type}</span>
+      <span class="agent">${item.agent_emoji || '🤖'} ${item.agent || 'unknown'}</span>
+      <span style="margin-left:8px">${new Date(item.timestamp * 1000).toLocaleTimeString()}</span>
+    </div>
+    ${item.title ? '<h3>' + item.title + '</h3>' : ''}
+    ${body}
+  `;
+
+  el.appendChild(card);
+  card.scrollIntoView({behavior:'smooth',block:'end'});
+}
+
+// Load history first
+fetch(HISTORY_URL)
+  .then(r => r.json())
+  .then(items => {
+    if (items.length === 0) {
+      empty.innerHTML = '🖼️<br>Waiting for pushes…';
+    } else {
+      items.forEach(addCard);
+      console.log('Loaded ' + items.length + ' history items');
+    }
+    // Then connect SSE
+    connectSSE();
+  })
+  .catch(e => {
+    empty.innerHTML = '❌ Failed to load history: ' + e;
+  });
+
+// SSE connection
+function connectSSE() {
+  const es = new EventSource(STREAM_URL);
+  es.onopen = () => {
+    dot.className = 'dot live';
+    statusEl.textContent = 'connected';
+  };
+  es.onmessage = e => {
+    if (!e.data) return;
+    try { addCard(JSON.parse(e.data)); }
+    catch(err) { console.warn('SSE parse error:', err); }
+  };
+  es.onerror = () => {
+    dot.className = 'dot dead';
+    statusEl.textContent = 'disconnected';
+    es.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+</script>
+</body>
+</html>
