@@ -22,7 +22,7 @@ if not TOKEN:
 
 p = argparse.ArgumentParser(description="Push content to Canvas board")
 p.add_argument("--board", "-b", default="main")
-p.add_argument("--type", "-t", default="markdown", choices=["markdown","code","mermaid","svg","html","image","video","clear"])
+p.add_argument("--type", "-t", default="markdown", choices=["markdown","code","mermaid","svg","draw","html","app","image","video","clear"])
 p.add_argument("--card-id", "-c", default="", help="UUID of existing card to update instead of creating a new one")
 p.add_argument("--title", "-T", default="")
 p.add_argument("--agent", "-a", default=os.environ.get("USER", "unknown"))

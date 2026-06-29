@@ -17,6 +17,7 @@ from functools import wraps
 from flask import Flask, g, render_template, request, Response, jsonify, make_response
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB payload limit
 
 # ── Live-editing: template changes take effect immediately, no restart ──
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -516,11 +517,20 @@ def push():
     agent_emoji = g.agent_emoji
     card_id = data.get("card_id")
 
+    # ── Validate content type ───────────────────────────────────────────
+    valid_types = {"markdown", "code", "mermaid", "svg", "draw", "html", "app", "image", "video", "clear"}
+    if content_type not in valid_types:
+        return jsonify({"error": f"invalid content type: {content_type}"}), 400
+
     # ── Clear board ────────────────────────────────────────────────────
     if content_type == "clear":
         clear_board(board_id)
         clear_board_in_db(board_id)
         return jsonify({"status": "ok", "board": board_id, "action": "cleared"})
+
+    # ── Validate required fields ────────────────────────────────────────
+    if not content:
+        return jsonify({"error": "missing field: content"}), 400
 
     # ── Parse expires_at ─────────────────────────────────────────────
     expires_at = data.get("expires_at")
@@ -750,7 +760,14 @@ def list_boards():
 @app.route("/health")
 def health():
     """Health check — confirms canvas is alive."""
-    return jsonify({"status": "ok", "boards": len(BOARDS), "uptime": "alive"})
+    db_ok = "ok"
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1")
+        conn.close()
+    except Exception:
+        db_ok = "error"
+    return jsonify({"status": "ok", "boards": len(BOARDS), "uptime": "alive", "database": db_ok})
 
 
 @app.route("/reload", methods=["POST"])

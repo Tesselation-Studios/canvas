@@ -27,15 +27,23 @@ ENV_FILE = PROJECT_DIR / ".env"
 
 # Load .env manually (avoid pulling in python-dotenv as a hard dep)
 CANVAS_URL = os.environ.get("CANVAS_URL", "http://192.168.1.73:5001")
-CANVAS_TOKEN = os.environ.get("CANVAS_TOKEN", "")
+# For push operations, use a user token (CASPER_TOKEN) not admin token (CANVAS_TOKEN)
+CANVAS_TOKEN = os.environ.get("CANVAS_PUSH_TOKEN") or os.environ.get("CASPER_TOKEN") or os.environ.get("CANVAS_TOKEN", "")
 
 if not CANVAS_TOKEN and ENV_FILE.exists():
     with open(ENV_FILE) as f:
         for line in f:
             line = line.strip()
-            if line.startswith("CANVAS_TOKEN="):
-                CANVAS_TOKEN = line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
+            if "=" in line:
+                k, v = line.split("=", 1)
+                v = v.strip().strip('"').strip("'")
+                if k == "CANVAS_PUSH_TOKEN":
+                    CANVAS_TOKEN = v
+                    break
+                elif k == "CASPER_TOKEN" and not CANVAS_TOKEN:
+                    CANVAS_TOKEN = v
+                elif k == "CANVAS_TOKEN" and not CANVAS_TOKEN:
+                    CANVAS_TOKEN = v
 
 # ── MCP Server ────────────────────────────────────────────────────────────
 mcp = FastMCP(
@@ -47,7 +55,7 @@ Cards appear instantly on the Canvas web UI (canvas.wodinga.studio).
 """
 )
 
-VALID_TYPES = {"markdown", "code", "mermaid", "svg", "html", "image", "video", "clear"}
+VALID_TYPES = {"markdown", "code", "mermaid", "svg", "draw", "html", "app", "image", "video", "clear"}
 
 
 @mcp.tool()
