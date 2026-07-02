@@ -206,6 +206,8 @@ def clear_board_in_db(board_id):
 BOARDS = defaultdict(list)
 # SSE subscribers: board_id -> set of Queue objects
 SUBSCRIBERS = defaultdict(set)
+# SSE subscribers for the unified feed (across all boards)
+FEED_SUBSCRIBERS = set()
 
 
 def get_board(name):
@@ -213,9 +215,10 @@ def get_board(name):
 
 
 def add_to_board(board_id, item):
+    global FEED_SUBSCRIBERS
     board = get_board(board_id)
     board.append(item)
-    # Notify all subscribers
+    # Notify per-board subscribers
     dead = set()
     for q in SUBSCRIBERS[board_id]:
         try:
@@ -223,12 +226,21 @@ def add_to_board(board_id, item):
         except queue.Full:
             dead.add(q)
     SUBSCRIBERS[board_id] -= dead
+    # Notify feed subscribers (all-boards stream)
+    dead_feed = set()
+    for q in FEED_SUBSCRIBERS:
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            dead_feed.add(q)
+    FEED_SUBSCRIBERS -= dead_feed
 
 
 def clear_board(board_id):
+    global FEED_SUBSCRIBERS
     BOARDS[board_id] = []
-    # Notify subscribers of clear
     item = {"id": "clear", "type": "clear", "content": "", "timestamp": time.time()}
+    # Notify per-board subscribers
     dead = set()
     for q in SUBSCRIBERS[board_id]:
         try:
@@ -236,6 +248,14 @@ def clear_board(board_id):
         except queue.Full:
             dead.add(q)
     SUBSCRIBERS[board_id] -= dead
+    # Notify feed subscribers
+    dead_feed = set()
+    for q in FEED_SUBSCRIBERS:
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            dead_feed.add(q)
+    FEED_SUBSCRIBERS -= dead_feed
 
 
 def board_exists(name):
@@ -315,6 +335,7 @@ def card_page(card_id):
 @app.route("/card/<card_id>", methods=["PUT"])
 @require_token
 def update_card(card_id):
+    global FEED_SUBSCRIBERS
     """Update a card by ID. Full update — requires type, content."""
     data = request.get_json(force=True)
     content_type = data.get("type", "markdown")
@@ -373,6 +394,14 @@ def update_card(card_id):
         except queue.Full:
             dead.add(q)
     SUBSCRIBERS[board_id] -= dead
+    # Also notify feed subscribers
+    dead_feed = set()
+    for q in FEED_SUBSCRIBERS:
+        try:
+            q.put_nowait(update_item)
+        except queue.Full:
+            dead_feed.add(q)
+    FEED_SUBSCRIBERS -= dead_feed
 
     return jsonify({"status": "ok", "action": "update", "id": card_id})
 
@@ -380,6 +409,7 @@ def update_card(card_id):
 @app.route("/card/<card_id>", methods=["PATCH"])
 @require_token
 def patch_card(card_id):
+    global FEED_SUBSCRIBERS
     """Partial update of a card. Only updates fields present in the body."""
     data = request.get_json(force=True)
     agent = g.agent
@@ -435,6 +465,14 @@ def patch_card(card_id):
         except queue.Full:
             dead.add(q)
     SUBSCRIBERS[board_id] -= dead
+    # Also notify feed subscribers
+    dead_feed = set()
+    for q in FEED_SUBSCRIBERS:
+        try:
+            q.put_nowait(update_item)
+        except queue.Full:
+            dead_feed.add(q)
+    FEED_SUBSCRIBERS -= dead_feed
 
     return jsonify({"status": "ok", "action": "update", "id": card_id})
 
@@ -442,6 +480,7 @@ def patch_card(card_id):
 @app.route("/card/<card_id>", methods=["DELETE"])
 @require_token
 def delete_card(card_id):
+    global FEED_SUBSCRIBERS
     """Remove a card by ID."""
     agent = g.agent
     agent_emoji = g.agent_emoji
@@ -483,14 +522,30 @@ def delete_card(card_id):
         except queue.Full:
             dead.add(q)
     SUBSCRIBERS[board_id] -= dead
+    # Also notify feed subscribers
+    dead_feed = set()
+    for q in FEED_SUBSCRIBERS:
+        try:
+            q.put_nowait(delete_event)
+        except queue.Full:
+            dead_feed.add(q)
+    FEED_SUBSCRIBERS -= dead_feed
 
     return jsonify({"status": "ok", "action": "deleted"})
 
 
 @app.route("/")
 def index():
-    board_id = request.args.get("board", "main")
-    response = make_response(render_template("index.html", board_id=board_id))
+    """
+    Root route:
+    - If ?board= is present, serve the legacy board view (index.html)
+    - Otherwise, serve the unified feed view (feed.html)
+    """
+    if request.args.get("board"):
+        board_id = request.args.get("board")
+        response = make_response(render_template("index.html", board_id=board_id))
+    else:
+        response = make_response(render_template("feed.html"))
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -507,6 +562,7 @@ def test():
 @app.route("/push", methods=["POST"])
 @require_token
 def push():
+    global FEED_SUBSCRIBERS
     data = request.get_json(force=True)
     board_id = data.get("board", "main")
     content_type = data.get("type", "markdown")
@@ -631,6 +687,14 @@ def push():
                 except queue.Full:
                     dead.add(q)
             SUBSCRIBERS[board_id] -= dead
+            # Also notify feed subscribers
+            dead_feed = set()
+            for q in FEED_SUBSCRIBERS:
+                try:
+                    q.put_nowait(item)
+                except queue.Full:
+                    dead_feed.add(q)
+            FEED_SUBSCRIBERS -= dead_feed
 
     return jsonify({
         "status": "ok",
@@ -749,6 +813,133 @@ def stream(board_id):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ─── Unified Feed Routes ─────────────────────────────────────────────────
+
+
+@app.route("/stream/feed")
+def stream_feed():
+    global FEED_SUBSCRIBERS
+    """SSE endpoint for the unified feed — receives cards from ALL boards."""
+    q = queue.Queue(maxsize=100)
+
+    def event_stream():
+        FEED_SUBSCRIBERS.add(q)
+        try:
+            yield "data: \n\n"
+            while True:
+                item = q.get()
+                data = json.dumps(item)
+                yield f"data: {data}\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            FEED_SUBSCRIBERS.discard(q)
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/agents")
+def api_agents():
+    """Return distinct agents with their emoji and card count."""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT agent, agent_emoji, COUNT(*) as card_count
+           FROM cards
+           WHERE (expires_at IS NULL OR expires_at > datetime('now'))
+           GROUP BY agent
+           ORDER BY card_count DESC"""
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(row) for row in rows])
+
+
+@app.route("/api/feed")
+def api_feed():
+    """
+    Return paginated feed of all cards across all boards, with optional agent filter.
+
+    Query params:
+        limit (int): Number of cards to return (default 20, max 100)
+        before (float): Unix timestamp — return cards older than this
+        agent (str, repeatable): Filter by agent name
+
+    Returns cards oldest-first (chronological) so frontend can append for pagination.
+    """
+    limit = request.args.get("limit", 20, type=int)
+    limit = min(max(1, limit), 100)
+    before = request.args.get("before", type=float)
+    agents = request.args.getlist("agent")
+
+    conn = get_db()
+    query = """SELECT * FROM cards
+               WHERE (expires_at IS NULL OR expires_at > datetime('now'))"""
+    params = []
+
+    if agents:
+        placeholders = ",".join("?" * len(agents))
+        query += f" AND agent IN ({placeholders})"
+        params.extend(agents)
+
+    if before:
+        query += " AND timestamp < ?"
+        params.append(before)
+
+    query += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+
+    items = []
+    for row in rows:
+        content = row["content"]
+        if content and isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, (dict, list)):
+                    content = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        items.append({
+            "id": row["id"],
+            "type": row["type"],
+            "content": content,
+            "title": row["title"] or "",
+            "agent": row["agent"] or "",
+            "agent_emoji": row["agent_emoji"] or "",
+            "timestamp": row["timestamp"],
+            "expires_at": row["expires_at"],
+            "board": row["board"],
+        })
+
+    # Return oldest-first for pagination append
+    items.reverse()
+
+    count_conn = get_db()
+    count_query = """SELECT COUNT(*) FROM cards
+                     WHERE (expires_at IS NULL OR expires_at > datetime('now'))"""
+    count_params = []
+    if agents:
+        placeholders = ",".join("?" * len(agents))
+        count_query += f" AND agent IN ({placeholders})"
+        count_params.extend(agents)
+    remaining = count_conn.execute(count_query, count_params).fetchone()[0]
+    count_conn.close()
+
+    return jsonify({
+        "cards": items,
+        "total": remaining,
+        "limit": limit,
+    })
 
 
 @app.route("/boards")

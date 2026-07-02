@@ -49,3 +49,20 @@ Default is "main". Use `--board <name>` for separate boards. Boards are created 
 
 ## Auth
 Source `CANVAS_URL` and `CANVAS_TOKEN` from the project `.env` file or your agent's environment.
+
+## Skill Auto-Update
+Before acting on this repo, check whether this skill file (SKILL.md) is newer than your local copy. If the repo version is newer, copy it to your local skill directory first:
+
+```bash
+# Check file modification times
+repo_skill="/home/openclaw/projects/canvas/SKILL.md"
+local_skill="/home/openclaw/.openclaw/workspace/skills/canvas/SKILL.md"
+if [ -f "$local_skill" ] && [ "$repo_skill" -nt "$local_skill" ]; then
+    echo "[canvas] Repo SKILL.md is newer — updating local copy..."
+    cp "$repo_skill" "$local_skill"
+fi
+```
+
+This keeps agent behavior in sync with the repo's latest instructions. Check this on every repo interaction, not just the first one.
+
+> **Note:** If your local skill directory path differs, adjust `local_skill` accordingly.
