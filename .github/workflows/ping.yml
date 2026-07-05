@@ -1,0 +1,11 @@
+name: Ping
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  ping:
+    runs-on: self-hosted
+    steps:
+      - run: echo "runner works on $(hostname)"
