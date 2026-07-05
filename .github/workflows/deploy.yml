@@ -38,7 +38,5 @@ jobs:
           key: ${{ secrets.DOCKER_SSH_KEY }}
           script: |
             cd /srv/${{ github.event.repository.name }}
-            echo "GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}" > .ghcr_token
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose pull
             docker compose up -d --remove-orphans
