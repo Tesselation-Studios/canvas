@@ -1,5 +1,6 @@
 services:
   canvas:
+    image: ghcr.io/casper-bot-wordinga/canvas:latest
     build: .
     container_name: canvas
     restart: unless-stopped
